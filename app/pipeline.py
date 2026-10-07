@@ -1,0 +1,573 @@
+"""The AsliDaam verification pipeline.
+
+query -> Amazon.in anchor listing -> Google Shopping candidates -> same-product resolution
+      -> Google Immersive Product stores -> resolution -> market math -> narrative
+
+Emits events through `emit(event, data)` so the UI can stream progress.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from . import market as mk
+from . import parse, resolve
+from .llm import LLM, NARRATE_SCHEMA, NARRATE_SYSTEM
+from .serp import (
+    BudgetExceeded,
+    CreditBudget,
+    ReplayMiss,
+    SerpCall,
+    SerpClient,
+    SerpError,
+)
+
+Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
+log = logging.getLogger(__name__)
+
+GSHOP = {"gl": "in", "hl": "en", "google_domain": "google.co.in"}
+AMZ = {"amazon_domain": "amazon.in"}
+
+
+@dataclass
+class Deps:
+    serp: SerpClient
+    llm: LLM
+    credits_per_check: int = 3
+
+
+@dataclass
+class Anchor:
+    source: str  # "amazon" | "shopping"
+    title: str
+    brand: str | None
+    price: float | None
+    mrp: float | None
+    link: str | None
+    image: str | None
+    rating: float | None = None
+    reviews: int | None = None
+    asin: str | None = None
+    seller: str | None = None
+    badges: list[str] | None = None
+    bought: str | None = None
+    bank_offers: list[dict] | None = None
+    review_summary: str | None = None
+
+    def public(self) -> dict:
+        return {k: v for k, v in self.__dict__.items()}
+
+
+class StepTracker:
+    def __init__(self, emit: Emit):
+        self.emit = emit
+
+    async def __call__(self, step: str, status: str, text: str, **extra: Any) -> None:
+        await self.emit("step", {"id": step, "status": status, "text": text, **extra})
+
+
+async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
+    step = StepTracker(emit)
+    budget = CreditBudget(deps.credits_per_check)
+    calls: list[dict] = []
+
+    async def on_call(c: SerpCall) -> None:
+        ev = c.to_event()
+        calls.append(ev)
+        await emit("serp_call", ev)
+
+    async def serp(engine: str, params: dict, purpose: str) -> dict | None:
+        try:
+            d = await deps.serp.search(engine, params, purpose=purpose, budget=budget, on_call=on_call)
+            return d if isinstance(d, dict) else None
+        except BudgetExceeded as e:
+            await emit("notice", {"text": f"Skipped {engine}: {e}"})
+        except ReplayMiss:
+            await emit("notice", {"text": "Offline demo mode: this query isn't recorded. Try an example, or add a SerpApi key."})
+        except SerpError as e:
+            await emit("notice", {"text": f"{engine}: {e}"})
+        except Exception:
+            log.exception("serp %s failed", engine)
+            await emit("notice", {"text": f"{engine}: unexpected response — skipped"})
+        return None
+
+    llm_notified = False
+
+    async def resolve_with_llm(title: str, cands: list[resolve.Candidate]) -> None:
+        nonlocal llm_notified
+        src = await llm_resolve(deps.llm, title, cands)
+        if src in {"unavailable", "error"} and not llm_notified:
+            llm_notified = True
+            await emit("notice", {"text": "AI resolver unavailable — using stricter rules-only matching."})
+
+    raw_query = await expand_short_link(raw_query)
+    try:
+        q = parse.classify(raw_query)
+    except ValueError as e:
+        await emit("error", {"text": str(e)})
+        return {"ok": False}
+    await step("parse", "done", {
+        "amazon_asin": f"Amazon.in product {q.value}",
+        "url_slug": f"Store link → “{q.value}”",
+        "text": f"Product search → “{q.value}”",
+    }[q.kind], kind=q.kind)
+
+    # 1 — anchor listing on Amazon.in ------------------------------------------------------
+    await step("anchor", "running", "Reading the Amazon.in listing")
+    anchor: Anchor | None = None
+    if q.kind == "amazon_asin":
+        d = await serp("amazon_product", {"asin": q.value, **AMZ},
+                       "Read the Amazon.in listing: price, M.R.P., seller, rating")
+        if d:
+            anchor = anchor_from_product(d, q.value)
+    else:
+        d = await serp("amazon", {"k": q.value, **AMZ}, "Find the product on Amazon.in (claimed price & M.R.P.)")
+        if d:
+            anchor = anchor_from_search(d, q.value)
+    if anchor:
+        await emit("anchor", anchor.public())
+        await step("anchor", "done", f"Amazon.in: {parse.short_query(anchor.title, None, 9)}")
+    else:
+        await step("anchor", "warn", "No matching Amazon.in listing — judging the market only")
+
+    # 2 — candidate product cards on Google Shopping --------------------------------------
+    base_title = anchor.title if anchor else q.value
+    brand = anchor.brand if anchor else None
+    if not brand and q.kind != "amazon_asin":
+        brand = parse.guess_brand(q.value, anchor.title if anchor else None)
+    # URL input: derive the query from the listing. Typed input: search what the user asked for.
+    sq = parse.short_query(base_title, brand) if q.kind == "amazon_asin" and anchor else q.value
+    await step("shopping", "running", f"Finding “{sq}” across Indian stores")
+    g = await serp("google_shopping", {"q": sq, **GSHOP}, "Find the same product across Indian stores")
+    cards = cards_from_shopping(g or {})
+    if not anchor and cards:
+        ref = pick_reference_card(cards, q.value)
+        if ref is not None:
+            base_title = ref.title
+    resolve.prefilter(base_title, brand, cards)
+    await resolve_with_llm(base_title, cards)
+    same_cards = [c for c in cards if c.label == "same"]
+
+    # Google Shopping is sensitive to exact wording; if the precise query found no exact
+    # match, widen to the product family once and let the resolver pick the variant.
+    fq = parse.family_query(sq, brand)
+    if anchor and not any(c.extra.get("page_token") for c in same_cards) and fq.lower() != sq.lower():
+        await step("shopping", "running", f"No exact match yet — widening to “{fq}”")
+        g2 = await serp("google_shopping", {"q": fq, **GSHOP}, "Widen to the product family, then pick the exact variant")
+        seen = {(c.store, c.title, c.price) for c in cards}
+        extra = [c for c in cards_from_shopping(g2 or {}, start_id=100) if (c.store, c.title, c.price) not in seen]
+        resolve.prefilter(base_title, brand, extra)
+        await resolve_with_llm(base_title, extra)
+        cards += extra
+        same_cards = [c for c in cards if c.label == "same"]
+    await emit("match", {"stage": "cards", "anchor_title": base_title,
+                         "candidates": [c.public() for c in cards]})
+    await step("shopping", "done" if cards else "warn",
+               f"{len(same_cards)} of {len(cards)} Shopping cards are the exact same product" if cards
+               else "Google Shopping returned no products")
+
+    # 3 — all stores for the best matching card -------------------------------------------
+    chosen = choose_card(same_cards, brand)
+    stores: list[resolve.Candidate] = []
+    im_pr: dict = {}
+    if chosen is not None:
+        await step("stores", "running", f"Pulling every store for “{parse.short_query(chosen.title, None, 8)}”")
+        im = await serp("google_immersive_product",
+                        {"page_token": chosen.extra["page_token"], "more_stores": "true"},
+                        "Pull all Indian stores, ratings, reviews, forum threads & videos for this product")
+        im_pr = (im or {}).get("product_results") or {}
+        stores = candidates_from_stores(im_pr, start_id=1000)
+        resolve.prefilter(base_title, brand, stores)
+        await resolve_with_llm(base_title, stores)
+        await emit("match", {"stage": "stores", "anchor_title": base_title,
+                             "candidates": [c.public() for c in stores]})
+        n_same = sum(1 for c in stores if c.label == "same")
+        await step("stores", "done", f"{n_same} of {len(stores)} store listings verified as the same product")
+    else:
+        await step("stores", "warn", "No exact-match product page to expand — using Shopping cards only")
+
+    # 4 — market math (code, not LLM) -----------------------------------------------------
+    offers = build_offers(anchor, same_cards, stores, brand)
+    google_range = parse_range(im_pr.get("price_range"))
+    m = mk.compute_market(offers, google_range)
+    v = mk.decide(m, anchor.price if anchor else None, anchor.mrp if anchor else None, offers)
+    await emit("market", {
+        "market": m.public(),
+        "verdict": v.public(),
+        "offers": [o.public() for o in sorted(offers, key=lambda o: o.price)],
+        "product": product_card(anchor, chosen, im_pr),
+    })
+
+    # 5 — what independent users say ------------------------------------------------------
+    sources = collect_sources(im_pr, anchor)
+    await emit("voices", {"ratings": im_pr.get("ratings"), "rating": im_pr.get("rating"),
+                          "reviews": im_pr.get("reviews"), "sources": sources})
+    await step("summary", "running", "Writing a plain-language summary")
+    summary = await narrate(deps.llm, m, v, anchor, sources)
+    await emit("summary", summary)
+    await step("summary", "done", "Done")
+
+    credits = sum(1 for c in calls if c["credit"])
+    result = {"ok": True, "credits_used": credits, "calls": len(calls), "verdict": v.label}
+    await emit("done", result)
+    return result
+
+
+# --- anchor extraction ---------------------------------------------------------------------
+
+def _d(x: Any) -> dict:
+    return x if isinstance(x, dict) else {}
+
+
+def _l(x: Any) -> list:
+    return x if isinstance(x, list) else []
+
+
+def _s(x: Any) -> str | None:
+    return x if isinstance(x, str) and x.strip() else None
+
+
+def anchor_from_product(d: dict, asin: str) -> Anchor | None:
+    pr = _d(d.get("product_results"))
+    if not _s(pr.get("title")):
+        return None
+    single = _d(_d(d.get("purchase_options")).get("single_offer"))
+    sold_by = _d(single.get("features")).get("sold_by")
+    seller = _s(sold_by.get("text")) if isinstance(sold_by, dict) else _s(sold_by)
+    price = parse.parse_inr(pr.get("price")) or parse.parse_inr(single.get("price"))
+    summary = _s(_d(_d(d.get("reviews_information")).get("summary")).get("text"))
+    brand = parse.clean_brand(_s(pr.get("brand"))) or _s(_d(d.get("product_details")).get("brand_name"))
+    offers = [b for b in _l(pr.get("bank_offers")) if isinstance(b, dict)]
+    return Anchor(
+        source="amazon", title=pr["title"], brand=brand, price=price, mrp=parse.parse_inr(pr.get("old_price")),
+        link=_s(pr.get("link_clean")) or _s(pr.get("link")) or f"https://www.amazon.in/dp/{asin}",
+        image=_s(pr.get("thumbnail")), rating=_num(pr.get("rating")), reviews=_num(pr.get("reviews")), asin=asin,
+        seller=seller, badges=[b for b in _l(pr.get("badges")) if isinstance(b, str)],
+        bought=_s(pr.get("bought_last_month")),
+        bank_offers=[{"title": _s(b.get("title")), "content": _s(b.get("content"))} for b in offers][:4],
+        review_summary=summary,
+    )
+
+
+def _num(x: Any) -> float | None:
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+
+
+def _overlap(query: str, title: str) -> float:
+    qt = parse.core_tokens(query)
+    if not qt:
+        return 0.0
+    tt = set(parse.tokens(title))
+    return len(qt & tt) / len(qt)
+
+
+def anchor_from_search(d: dict, query: str) -> Anchor | None:
+    best, best_score = None, 0.0
+    q_models = resolve._model_numbers(query)
+    q_marks = parse.variant_markers(query)
+    q_toks = set(parse.tokens(query))
+    for i, o in enumerate(_l(d.get("organic_results"))):
+        if not isinstance(o, dict):
+            continue
+        title = _s(o.get("title")) or ""
+        if not title or parse.parse_inr(o.get("price")) is None:
+            continue
+        if q_models and not all(resolve.has_model(title, m) for m in q_models):
+            continue  # every model token the user typed must be in the listing (HD9252/90 ≠ HD9252/70)
+        if (set(parse.tokens(title)) & parse.ACCESSORY_WORDS) - q_toks:
+            continue
+        if parse.variant_markers(resolve._head(title)) - q_marks:
+            continue  # "Redmi Note 13" or "141 Pro" when the user asked for "Redmi 13" / "141"
+        score = _overlap(query, title) - (0.15 if o.get("sponsored") else 0) - i * 0.01
+        if score > best_score:
+            best, best_score = o, score
+    if best is None or best_score < 0.5:
+        return None
+    return Anchor(
+        source="amazon", title=best["title"], brand=None, price=parse.parse_inr(best.get("price")),
+        mrp=parse.parse_inr(best.get("old_price")), link=_s(best.get("link_clean")) or _s(best.get("link")),
+        image=_s(best.get("thumbnail")), rating=_num(best.get("rating")), reviews=_num(best.get("reviews")),
+        asin=_s(best.get("asin")), badges=[b for b in _l(best.get("badges")) if isinstance(b, str)],
+        bought=_s(best.get("bought_last_month")),
+    )
+
+
+# --- candidates ----------------------------------------------------------------------------
+
+def cards_from_shopping(g: dict, start_id: int = 0) -> list[resolve.Candidate]:
+    out = []
+    seen: set[tuple] = set()
+    for i, r in enumerate(_l(g.get("shopping_results"))):
+        if not isinstance(r, dict):
+            continue
+        price = parse.parse_inr(r.get("price"))
+        title = _s(r.get("title"))
+        if not title or price is None:
+            continue
+        dedupe = (r.get("source"), title, price)
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+        out.append(resolve.Candidate(
+            id=start_id + i, title=title, store=_s(r.get("source")) or "?", price=price,
+            link=_s(r.get("product_link")), origin="google_shopping",
+            extra={"page_token": _s(r.get("immersive_product_page_token")), "thumbnail": _s(r.get("thumbnail")),
+                   "rating": _num(r.get("rating")), "reviews": _num(r.get("reviews")),
+                   "old_price": parse.parse_inr(r.get("old_price")), "logo": _s(r.get("source_icon"))},
+        ))
+    return out
+
+
+def candidates_from_stores(pr: dict, start_id: int) -> list[resolve.Candidate]:
+    out = []
+    for i, s in enumerate(_l(pr.get("stores"))):
+        if not isinstance(s, dict):
+            continue
+        price = parse.parse_inr(s.get("price")) or parse.parse_inr(s.get("extracted_price"))
+        if price is None:
+            continue
+        notes = [n for n in _l(s.get("details_and_offers")) if isinstance(n, str)]
+        out.append(resolve.Candidate(
+            id=start_id + i, title=_s(s.get("title")) or _s(pr.get("title")) or "", store=_s(s.get("name")) or "?",
+            price=price, link=_s(s.get("link")), origin="google_immersive_product",
+            extra={"rating": _num(s.get("rating")), "reviews": _num(s.get("reviews")), "logo": _s(s.get("logo")),
+                   "notes": notes},
+        ))
+    return out
+
+
+def pick_reference_card(cards: list[resolve.Candidate], query: str) -> resolve.Candidate | None:
+    scored = sorted(cards, key=lambda c: (-_overlap(query, c.title), c.id))
+    return scored[0] if scored and _overlap(query, scored[0].title) >= 0.5 else None
+
+
+def choose_card(same: list[resolve.Candidate], brand: str | None) -> resolve.Candidate | None:
+    with_token = [c for c in same if c.extra.get("page_token")]
+    if not with_token:
+        return None
+
+    def rank(c: resolve.Candidate) -> tuple:
+        kind = mk.classify_store(c.store, brand)
+        pref = {"official": 0, "major": 1, "quick": 2, "other": 3}[kind]
+        return (pref, -(c.extra.get("reviews") or 0), c.id)
+
+    return sorted(with_token, key=rank)[0]
+
+
+async def llm_resolve(llm: LLM, anchor_title: str, cands: list[resolve.Candidate]) -> str:
+    """Refine rule labels with one batched LLM call. Returns the LLM source (cache/live/unavailable/error/skipped)."""
+    pending = [c for c in cands if c.label in {"same", "variant"}]
+    if not pending:
+        return "skipped"
+    data, src = await llm.json(resolve.RESOLVE_SYSTEM, resolve.resolve_prompt(anchor_title, pending),
+                               resolve.RESOLVE_SCHEMA, "resolve")
+    if isinstance(data, dict):
+        resolve.apply_llm_labels(pending, [x for x in _l(data.get("labels")) if isinstance(x, dict)])
+    return src
+
+
+def build_offers(anchor: Anchor | None, cards: list[resolve.Candidate], stores: list[resolve.Candidate],
+                 brand: str | None) -> list[mk.Offer]:
+    # One row per retailer: prefer an in-stock listing, then the lowest price, then richer store rows.
+    best: dict[str, mk.Offer] = {}
+    for c in stores + cards:
+        if c.label != "same" or not c.price:
+            continue
+        key = mk.store_key(c.store)
+        notes = [n for n in _l(c.extra.get("notes")) if isinstance(n, str)]
+        kind = mk.classify_store(c.store, brand)
+        if kind == "quick":
+            notes.append("Price may vary by pincode")
+        o = mk.Offer(store=c.store, price=c.price, link=c.link, title=c.title, kind=kind,
+                     rating=c.extra.get("rating"), reviews=c.extra.get("reviews"), notes=notes,
+                     logo=c.extra.get("logo"), origin=c.origin, available=not mk.is_unavailable(notes))
+        # The listing being judged must not vouch for itself.
+        if anchor and anchor.source == "amazon" and "amazon" in key:
+            o.in_reference = False
+        cur = best.get(key)
+        if cur is None or (not cur.available, cur.price) > (not o.available, o.price):
+            best[key] = o
+    offers = list(best.values())
+    if anchor and anchor.price:
+        offers.append(mk.Offer(store="Amazon.in (this listing)", price=anchor.price, link=anchor.link,
+                               title=anchor.title, kind="major", rating=anchor.rating, reviews=anchor.reviews,
+                               notes=[f"Sold by {anchor.seller}"] if anchor.seller else [],
+                               origin="amazon", is_anchor=True))
+    return offers
+
+
+_SHORT_HOSTS = {"amzn.in", "amzn.to", "a.co", "amzn.eu"}
+
+
+async def expand_short_link(raw: str) -> str:
+    """Amazon app share links (amzn.in/d/…) redirect to the full product URL. Free, no SerpApi credit."""
+    q = (raw or "").strip()
+    m = re.match(r"^(?:https?://)?([^/\s]+)(/\S*)?$", q, re.IGNORECASE)
+    if not m or m.group(1).lower() not in _SHORT_HOSTS:
+        return raw
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=8.0, max_redirects=5) as c:
+            r = await c.head("https://" + m.group(1).lower() + (m.group(2) or "/"))
+            final = str(r.url)
+        host = (httpx.URL(final).host or "").lower()
+        return final if host.endswith("amazon.in") or host.endswith("amazon.com") else raw
+    except Exception:  # noqa: BLE001 - expansion is best-effort; classify() reports unreadable links
+        return raw
+
+
+def parse_range(s: Any) -> tuple[float, float] | None:
+    if not s:
+        return None
+    nums = [parse.parse_inr(p) for p in re.split(r"\s*[-–]\s*", str(s))]
+    nums = [n for n in nums if n]
+    if len(nums) == 2:
+        return (min(nums), max(nums))
+    return None
+
+
+def product_card(anchor: Anchor | None, chosen: resolve.Candidate | None, pr: dict) -> dict:
+    thumbs = pr.get("thumbnails") or []
+    return {
+        "title": (anchor.title if anchor else None) or pr.get("title") or (chosen.title if chosen else None),
+        "image": (anchor.image if anchor else None) or (thumbs[0] if thumbs else None)
+        or (chosen.extra.get("thumbnail") if chosen else None),
+        "brand": (anchor.brand if anchor else None) or pr.get("brand"),
+        "google_title": pr.get("title"),
+    }
+
+
+# --- voices & narrative ---------------------------------------------------------------------
+
+def collect_sources(pr: dict, anchor: Anchor | None) -> list[dict]:
+    src: list[dict] = []
+    for r in [x for x in _l(pr.get("user_reviews")) if isinstance(x, dict)][:6]:
+        text = (_s(r.get("text")) or "").strip()
+        if text:
+            src.append({"type": "review", "title": _s(r.get("title")) or "", "text": text[:500],
+                        "rating": _num(r.get("rating")), "source": _s(r.get("source")), "link": _s(r.get("link"))})
+    for f in [x for x in _l(pr.get("discussions_and_forums")) if isinstance(x, dict)][:5]:
+        src.append({"type": "forum", "title": _s(f.get("title")) or "", "source": _s(f.get("source")),
+                    "link": _s(f.get("link")),
+                    "meta": " · ".join(str(x) for x in [f.get("date"), f.get("comments")] if x)})
+    for v in [x for x in _l(pr.get("videos")) if isinstance(x, dict)][:4]:
+        src.append({"type": "video", "title": _s(v.get("title")) or "",
+                    "source": _s(v.get("channel")) or _s(v.get("source")), "link": _s(v.get("link")),
+                    "thumbnail": _s(v.get("thumbnail")), "meta": _s(v.get("duration"))})
+    if anchor and anchor.review_summary:
+        src.append({"type": "store_summary", "title": "Amazon.in review summary",
+                    "text": anchor.review_summary[:700], "source": "Amazon.in", "link": anchor.link})
+    for i, s in enumerate(src):
+        s["id"] = i
+    return src
+
+
+_RUPEE_RE = re.compile(r"₹\s?([0-9][0-9,]*)")
+_PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s?%")
+_MULT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s?[x×]", re.IGNORECASE)
+
+
+def numbers_grounded(text: str, facts: dict) -> bool:
+    """True when every ₹ amount, percentage and multiple in `text` also appears in the computed facts."""
+    blob = " ".join(str(v) for v in facts.values() if v is not None)
+    allowed_rupees = {m.replace(",", "") for m in _RUPEE_RE.findall(blob)}
+    allowed_pcts = {m for m in _PCT_RE.findall(blob)} | {str(v) for v in facts.values() if isinstance(v, int)}
+    allowed_mult = {m for m in _MULT_RE.findall(blob)} | {f"{facts.get('mrp_multiple')}"}
+    if any(m.replace(",", "") not in allowed_rupees for m in _RUPEE_RE.findall(text)):
+        return False
+    if any(m not in allowed_pcts for m in _PCT_RE.findall(text)):
+        return False
+    return all(m in allowed_mult or m.rstrip("0").rstrip(".") in allowed_mult for m in _MULT_RE.findall(text))
+
+
+async def narrate(llm: LLM, m: mk.Market, v: mk.Verdict, anchor: Anchor | None, sources: list[dict]) -> dict:
+    def inr(x: float | None) -> str | None:
+        return f"₹{x:,.0f}" if x is not None else None
+
+    facts = {
+        "product": anchor.title[:140] if anchor else None,
+        "label": v.label, "headline": v.headline,
+        "deal_price": inr(v.deal_price), "mrp": inr(v.mrp),
+        "claimed_discount_pct": round(v.claimed_discount * 100) if v.claimed_discount else None,
+        "real_saving_vs_market": (
+            f"{inr(v.real_saving_abs)} ({v.real_saving:.0%}) below the market reference" if v.real_saving and v.real_saving > 0.005
+            else f"{inr(-v.real_saving_abs)} ({-v.real_saving:.0%}) ABOVE the market reference" if v.real_saving and v.real_saving < -0.005
+            else "no saving vs the market reference" if v.real_saving is not None else None
+        ),
+        "real_saving_amount": inr(abs(v.real_saving_abs)) if v.real_saving_abs is not None else None,
+        "real_saving_pct": round(abs(v.real_saving) * 100) if v.real_saving is not None else None,
+        "market_reference": inr(m.reference), "stores": m.store_count,
+        "market_min": inr(m.min_price), "market_max": inr(m.max_price),
+        "mrp_multiple": v.public()["mrp_multiple"], "mrp_theatre": v.mrp_theatre,
+        "best_trusted_store": v.best_trusted["store"] if v.best_trusted else None,
+        "best_trusted_price": inr(v.best_trusted["price"]) if v.best_trusted else None,
+    }
+    src_txt = "\n".join(
+        f"[{s['id']}] {s['type']} · {s.get('source') or ''} · {s.get('title', '')[:120]}"
+        + (f" · rating {s['rating']}" if s.get("rating") else "")
+        + (f"\n    {s['text'][:400]}" if s.get("text") else "")
+        for s in sources
+    )
+    user = f"FACTS:\n{facts}\n\nSOURCES:\n{src_txt or '(none)'}"
+    data, _origin = await llm.json(NARRATE_SYSTEM, user, NARRATE_SCHEMA, "narrate")
+    if isinstance(data, dict):
+        valid = {s["id"] for s in sources}
+        voices = [
+            {"point": str(vb.get("point", ""))[:240], "tone": vb.get("tone") if vb.get("tone") in {"positive", "negative", "mixed"} else "mixed",
+             "source_ids": [i for i in _l(vb.get("source_ids")) if i in valid]}
+            for vb in _l(data.get("voices")) if isinstance(vb, dict)
+        ]
+        summary = str(data.get("summary") or "")
+        # The summary may only restate computed numbers; anything else falls back to the template.
+        if summary and numbers_grounded(summary, facts):
+            return {"summary": summary, "voices": [x for x in voices if x["source_ids"]], "generated_by": "llm"}
+        return {"summary": template_summary(m, v), "voices": [x for x in voices if x["source_ids"]],
+                "generated_by": "template"}
+    return {"summary": template_summary(m, v), "voices": [], "generated_by": "template"}
+
+
+def template_summary(m: mk.Market, v: mk.Verdict) -> str:
+    if v.label == "not_enough_data" or m.reference is None:
+        return "We couldn't find at least three independent Indian stores selling this exact product, so the price can't be judged fairly."
+    s = f"{v.headline}. The market price across {m.store_count} Indian stores is about ₹{m.reference:,.0f}."
+    if v.mrp_theatre and v.mrp_multiple:
+        s += f" The M.R.P. is {v.mrp_multiple:.1f}× what stores actually charge."
+    return s
+
+
+# --- Lens (optional, +1 credit) -----------------------------------------------------------------
+
+async def run_lens(image: str, title: str, deps: Deps, emit: Emit) -> dict:
+    calls: list[dict] = []
+
+    async def on_call(c: SerpCall) -> None:
+        calls.append(c.to_event())
+        await emit("serp_call", c.to_event())
+
+    budget = CreditBudget(1)
+    try:
+        d = await deps.serp.search("google_lens", {"url": image, "country": "in", "hl": "en"},
+                                   purpose="Where else is this exact product photo listed?", budget=budget,
+                                   on_call=on_call)
+    except (BudgetExceeded, ReplayMiss, SerpError) as e:
+        await emit("error", {"text": f"Lens unavailable: {e}"})
+        return {"ok": False}
+    matches = []
+    for i, v in enumerate([x for x in _l(_d(d).get("visual_matches")) if isinstance(x, dict)][:20]):
+        pr = _d(v.get("price"))
+        # Only rupee prices are comparable; Lens also returns $, AED etc. from foreign stores.
+        rupee = pr.get("currency") == "₹" or "₹" in str(pr.get("value") or "")
+        c = resolve.Candidate(id=i, title=_s(v.get("title")) or "", store=_s(v.get("source")) or "?",
+                              price=parse.parse_inr(pr.get("extracted_value")) if rupee else None,
+                              link=_s(v.get("link")), origin="google_lens",
+                              extra={"thumbnail": _s(v.get("thumbnail")), "logo": _s(v.get("source_icon"))})
+        c.label, c.reason = resolve.deterministic(title, None, c)
+        matches.append(c.public() | {"kind": mk.classify_store(c.store, None)})
+    await emit("lens", {"matches": matches})
+    await emit("done", {"ok": True, "credits_used": sum(1 for c in calls if c["credit"])})
+    return {"ok": True}

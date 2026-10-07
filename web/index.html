@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AsliDaam — the real price</title>
+  <meta name="description" content="Is that festive discount real? AsliDaam checks the same exact product across Indian stores with live SerpApi data.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23d9480f'/><text x='32' y='44' font-size='34' text-anchor='middle' fill='white' font-family='Georgia'>₹</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,650;9..144,800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="AsliDaam home">
+      <span class="brand-mark" aria-hidden="true">₹</span>
+      <span class="brand-text"><b>AsliDaam</b><small lang="hi">असली दाम · the real price</small></span>
+    </a>
+    <div class="status" id="status">
+      <span class="pill" id="pill-mode" title="Data mode">…</span>
+      <span class="pill" id="pill-credits" title="SerpApi searches left this month (free Account API)"></span>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.39 5.39 0 0 1-4.4 2.26 5.4 5.4 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" id="hero">
+      <p class="eyebrow"><span class="dot"></span> Festive sale season · live data via SerpApi</p>
+      <h1>Is that <em>80% off</em> real?</h1>
+      <p class="lede">Paste an Amazon.in link or type a product. AsliDaam finds the <b>same exact product</b> across Indian stores, works out what the market actually charges, and shows your <b>real saving</b>, with every price linked to its source.</p>
+
+      <form class="search" id="search-form" autocomplete="off">
+        <label class="sr-only" for="q">Amazon.in link or product name</label>
+        <svg class="search-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M10 4a6 6 0 1 0 3.74 10.7l4.78 4.79 1.42-1.42-4.79-4.78A6 6 0 0 0 10 4zm0 2a4 4 0 1 1 0 8 4 4 0 0 1 0-8z"/></svg>
+        <input id="q" name="q" type="text" required minlength="2" maxlength="600"
+               placeholder="https://www.amazon.in/dp/…  or  “Redmi 13 5G 8GB 128GB”">
+        <button class="btn-primary" id="go" type="submit">
+          <span class="btn-label">Check price</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+      </form>
+      <div class="examples" id="examples" aria-label="Examples"></div>
+      <ul class="how">
+        <li><b>1</b> Reads the Amazon.in listing: price, M.R.P., seller</li>
+        <li><b>2</b> Finds the same product across stores, and an AI resolver rejects look-alike variants</li>
+        <li><b>3</b> Computes the market price in code, never guessed by the AI</li>
+      </ul>
+    </section>
+
+    <section class="results hidden" id="results" aria-live="polite">
+      <aside class="trail card" id="trail">
+        <div class="card-head">
+          <h2>Live trail</h2>
+          <span class="credits-used" id="credits-used">0 credits</span>
+        </div>
+        <ol class="steps" id="steps"></ol>
+        <p class="trail-foot">Each SerpApi call shows its engine, why it was made, and whether it cost a credit or came from cache.</p>
+      </aside>
+
+      <div class="main-col">
+        <article class="card verdict-card" id="verdict-card">
+          <div class="product" id="product">
+            <div class="product-img skeleton" id="product-img"></div>
+            <div class="product-meta">
+              <div class="badges" id="product-badges"></div>
+              <h2 class="product-title skeleton-text" id="product-title">Reading listing…</h2>
+              <p class="product-sub" id="product-sub"></p>
+            </div>
+          </div>
+          <div class="verdict" id="verdict">
+            <span class="verdict-label skeleton-text" id="verdict-label">Checking stores…</span>
+            <p class="headline" id="headline"></p>
+            <div class="tiles" id="tiles"></div>
+            <p class="summary" id="summary"></p>
+          </div>
+        </article>
+
+        <article class="card" id="line-card">
+          <div class="card-head">
+            <h2>Where this price sits in the market</h2>
+            <span class="muted" id="line-note"></span>
+          </div>
+          <div class="numberline" id="numberline"><div class="skeleton block"></div></div>
+          <div class="legend" id="legend"></div>
+        </article>
+
+        <article class="card" id="stores-card">
+          <div class="card-head">
+            <h2>Same product, every store</h2>
+            <span class="muted" id="stores-note"></span>
+          </div>
+          <div class="table-wrap"><table class="stores" id="stores"><tbody><tr><td><div class="skeleton block small"></div></td></tr></tbody></table></div>
+        </article>
+
+        <article class="card" id="voices-card">
+          <div class="card-head">
+            <h2>What real users say</h2>
+            <span class="muted">from reviews, forums &amp; videos found via Google Immersive Product</span>
+          </div>
+          <div class="voices-grid">
+            <div class="ratings" id="ratings"></div>
+            <ul class="voices" id="voices"><li class="skeleton block small"></li></ul>
+          </div>
+          <div class="sources" id="sources"></div>
+        </article>
+
+        <article class="card" id="match-card">
+          <details>
+            <summary>
+              <h2>How we matched the exact product</h2>
+              <span class="muted" id="match-note"></span>
+            </summary>
+            <div id="match-body"></div>
+          </details>
+        </article>
+
+        <article class="card lens-card" id="lens-card">
+          <div class="card-head">
+            <h2>Where else is this photo listed?</h2>
+            <button class="btn-ghost" id="lens-btn" type="button" disabled>Run Google Lens <small>+1 credit</small></button>
+          </div>
+          <p class="muted">Optional. Google Lens finds where the same product photo appears across the web. It's useful for spotting lookalike or unofficial listings. Lens prices are shown for context only and never used in the market price.</p>
+          <div class="lens-grid" id="lens-grid"></div>
+        </article>
+
+        <div class="share-row">
+          <button class="btn-ghost" id="share-btn" type="button" disabled>Copy WhatsApp summary</button>
+          <a class="btn-ghost" id="wa-btn" target="_blank" rel="noopener" aria-disabled="true">Share on WhatsApp</a>
+        </div>
+      </div>
+    </section>
+
+    <div class="toast hidden" id="toast" role="status"></div>
+  </main>
+
+  <footer class="foot">
+    <p>Prices are public listings fetched live through <a href="https://serpapi.com" target="_blank" rel="noopener">SerpApi</a> (Amazon, Google Shopping, Google Immersive Product, Google Lens). Quick-commerce prices may vary by pincode. AsliDaam states numbers, not judgements on any seller.</p>
+  </footer>
+
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
