@@ -38,6 +38,78 @@ def classify(raw: str) -> Query:
     return Query("text", re.sub(r"\s+", " ", q)[:150], raw)
 
 
+_FOREIGN_CCY_RE = re.compile(r"[$€£¥]|(?<![a-z])(usd|aed|eur|gbp|sar|cad|aud)(?![a-z])", re.IGNORECASE)
+
+# Store links Nijam can read through Google's index of the page (no dedicated SerpApi engine).
+STORE_LABELS = {
+    "flipkart.com": "Flipkart", "myntra.com": "Myntra", "ajio.com": "AJIO", "croma.com": "Croma",
+    "reliancedigital.in": "Reliance Digital", "vijaysales.com": "Vijay Sales", "tatacliq.com": "Tata CLiQ",
+    "nykaa.com": "Nykaa", "nykaafashion.com": "Nykaa Fashion", "jiomart.com": "JioMart", "meesho.com": "Meesho",
+    "snapdeal.com": "Snapdeal", "boat-lifestyle.com": "boAt", "mi.com": "Mi.com", "samsung.com": "Samsung",
+    "apple.com": "Apple", "decathlon.in": "Decathlon", "firstcry.com": "FirstCry", "pepperfry.com": "Pepperfry",
+}
+
+
+def store_of(url: str) -> tuple[str, str]:
+    """('flipkart.com', 'Flipkart') for any Flipkart URL; falls back to the bare domain."""
+    host = (urlparse(url if "://" in url else "https://" + url).hostname or "").lower()
+    host = re.sub(r"^(www|m|dl)\.", "", host)
+    for domain, label in STORE_LABELS.items():
+        if host == domain or host.endswith("." + domain):
+            return domain, label
+    return host, host
+
+
+def listing_id(url: str) -> str | None:
+    """Stable listing id in a store URL: Flipkart 'itm…', Myntra numeric id, etc."""
+    path = unquote(urlparse(url if "://" in url else "https://" + url).path)
+    m = re.search(r"(itm[0-9a-z]{8,})", path, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    ids = [p for p in path.split("/") if re.fullmatch(r"[0-9a-z]{6,}", p, re.IGNORECASE) and re.search(r"[0-9]", p)]
+    return ids[-1].lower() if ids else None
+
+
+# Words after which a URL slug stops naming the product: "asics noosa tri 16 | running shoes men".
+CATEGORY_WORDS = {
+    "running", "shoes", "shoe", "sneakers", "sandals", "slippers", "boots", "tshirt", "t", "shirt", "shirts",
+    "jeans", "kurta", "kurti", "saree", "dress", "for", "men", "mens", "women", "womens", "boys", "girls",
+    "kids", "unisex", "buy", "online", "with", "price",
+}
+
+
+def product_query(slug: str, max_words: int = 7) -> str:
+    """'asics noosa tri 16 running shoes men' -> 'asics noosa tri 16' (keeps ≥2 words)."""
+    words = slug.split()
+    for i, w in enumerate(words):
+        if i >= 2 and w.lower() in CATEGORY_WORDS:
+            return " ".join(words[:i][:max_words])
+    return " ".join(words[:max_words])
+
+
+_SNIPPET_PRICE_RE = re.compile(r"(\d{1,2})%\.?\s*(?:off\s*)?₹?\s?([\d,]{3,})\.?\s*₹\s?([\d,]{2,})")
+
+
+def snippet_prices(result: dict) -> tuple[float | None, float | None]:
+    """(price, mrp) from a Google organic result for a store page.
+
+    Uses the structured rich snippet when present, else Flipkart-style text: '51%. 11,999. ₹5,899.'
+    """
+    rich = ((result.get("rich_snippet") or {}).get("top") or {}).get("detected_extensions") or {}
+    snippet = str(result.get("snippet") or "")
+    m = _SNIPPET_PRICE_RE.search(snippet)
+    mrp = parse_inr(m.group(2)) if m else None
+    if rich.get("price") and rich.get("currency") in (None, "₹", "INR"):
+        price = parse_inr(rich.get("price"))
+    elif m:
+        price = parse_inr(m.group(3))
+    else:
+        price = parse_inr(re.search(r"₹\s?[\d,]+(?:\.\d+)?", snippet).group(0)) if "₹" in snippet else None
+    if mrp and price and mrp <= price:
+        mrp = None
+    return price, mrp
+
+
 def slug_text(url: str) -> str:
     """Best-effort product name from a store URL path (Flipkart, Croma, etc.)."""
     path = unquote(urlparse(url).path)
@@ -71,6 +143,8 @@ def parse_inr(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value) if value > 0 else None
     s = str(value)
+    if "₹" not in s and _FOREIGN_CCY_RE.search(s):
+        return None  # "$140.00" is not ₹140
     m = _NUM_RE.search(s)
     if m:
         n = float(m.group(1).replace(",", ""))
@@ -89,7 +163,7 @@ def parse_inr(value: object) -> float | None:
 # Words that distinguish one variant from another. Present on one side only => different product.
 VARIANT_WORDS = {
     "anc", "enc", "pro", "max", "plus", "lite", "mini", "ultra", "elite", "neo", "prime", "air", "fe",
-    "se", "edge", "fold", "flip", "nano", "slim", "turbo", "sport", "x", "s", "5g", "4g", "note",
+    "se", "edge", "fold", "flip", "nano", "slim", "turbo", "sport", "5g", "4g", "note",
 }
 _GEN_RE = re.compile(r"\b(?:gen(?:eration)?\s*([0-9]+)|([0-9]+)(?:st|nd|rd|th)\s*gen)\b", re.IGNORECASE)
 _STORAGE_RE = re.compile(r"\b([0-9]{1,4})\s*(gb|tb)\b", re.IGNORECASE)
@@ -102,7 +176,7 @@ ACCESSORY_WORDS = {
     "earpads", "earpad", "pads", "foam", "screenguard",
 }
 # "Compatible with X" / "for OnePlus Nord" phrasing is how accessory listings name the product they fit.
-ACCESSORY_PHRASE_RE = re.compile(r"(?<![a-z])(compatible (with|for)|replacement for)(?![a-z])|के लि", re.I)  # Hindi "के लिए" = "for"
+ACCESSORY_PHRASE_RE = re.compile(r"(?<![a-z])(compatible (with|for)|replacement for)(?![a-z])|के लि", re.IGNORECASE)  # Hindi "के लिए" = "for"
 
 
 def fix_mojibake(text: str) -> str:
@@ -137,7 +211,7 @@ STOPWORDS = {
 }
 
 
-_SIZE_SPLIT_RE = re.compile(r"([0-9])\s+(gb|tb|mb)(?![a-z])", re.I)
+_SIZE_SPLIT_RE = re.compile(r"([0-9])\s+(gb|tb|mb)(?![a-z])", re.IGNORECASE)
 
 
 def tokens(title: str) -> list[str]:
@@ -163,7 +237,7 @@ def accessory_word(title: str, anchor_title: str = "") -> str | None:
     if anchor_title and accessory_word(anchor_title):
         return None
     # "Stand-alone air fryer" is not a stand
-    title = re.sub(r"stand[\s-]?alone", "standalone", title or "", flags=re.I)
+    title = re.sub(r"stand[\s-]?alone", "standalone", title or "", flags=re.IGNORECASE)
     toks = tokens(title_head(title)) or tokens(title)
     for i, t in enumerate(toks):
         if t not in ACCESSORY_WORDS:
@@ -187,7 +261,7 @@ def storage(title: str) -> set[str]:
     return {f"{n}{u.lower()}" for n, u in _STORAGE_RE.findall(title or "")}
 
 
-NOISE_CANCEL_RE = re.compile(r"noise[\s-]?cancel", re.I)
+NOISE_CANCEL_RE = re.compile(r"noise[\s-]?cancel", re.IGNORECASE)
 
 
 def variant_markers(title: str) -> set[str]:

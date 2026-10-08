@@ -241,6 +241,7 @@ h1 em {
 .engine.google_shopping { background: var(--e-shopping); }
 .engine.google_immersive_product { background: var(--e-immersive); }
 .engine.google_lens { background: var(--e-lens); }
+.engine.google { background: var(--ink-2); }
 :root[data-theme="dark"] .engine { color: #120d08; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .engine { color: #120d08; } }
 .tag { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: var(--neutral-soft); color: var(--muted); }

@@ -60,6 +60,9 @@ class Anchor:
     bought: str | None = None
     bank_offers: list[dict] | None = None
     review_summary: str | None = None
+    store: str = "Amazon.in"  # whose listing is being judged
+    price_note: str | None = None  # caveat shown next to the price (e.g. read from Google's index)
+    offer_price: float | None = None  # "Buy at ₹X" with bank/coupon offers, when the store shows it
 
     def public(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -119,23 +122,30 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
         "text": f"Product search → “{q.value}”",
     }[q.kind], kind=q.kind)
 
-    # 1 — anchor listing on Amazon.in ------------------------------------------------------
-    await step("anchor", "running", "Reading the Amazon.in listing")
+    # 1 — the listing being judged -----------------------------------------------------------
     anchor: Anchor | None = None
+    store_domain, store_label = parse.store_of(raw_query) if q.kind == "url_slug" else ("amazon.in", "Amazon.in")
+    await step("anchor", "running", f"Reading the {store_label} listing")
     if q.kind == "amazon_asin":
         d = await serp("amazon_product", {"asin": q.value, **AMZ},
                        "Read the Amazon.in listing: price, M.R.P., seller, rating")
         if d:
             anchor = anchor_from_product(d, q.value)
+    elif q.kind == "url_slug":
+        # No SerpApi engine for Flipkart/Myntra/Croma…: read the page's price from Google's index of it.
+        d = await serp("google", {"q": f"site:{store_domain} {q.value}", **GSHOP},
+                       f"Read the {store_label} listing from Google's index (price & M.R.P.)")
+        if d:
+            anchor = anchor_from_store_results(d, raw_query, q.value, store_domain, store_label)
     else:
         d = await serp("amazon", {"k": q.value, **AMZ}, "Find the product on Amazon.in (claimed price & M.R.P.)")
         if d:
             anchor = anchor_from_search(d, q.value)
     if anchor:
         await emit("anchor", anchor.public())
-        await step("anchor", "done", f"Amazon.in: {parse.short_query(anchor.title, None, 9)}")
+        await step("anchor", "done", f"{anchor.store}: {parse.short_query(anchor.title, None, 9)}")
     else:
-        await step("anchor", "warn", "No matching Amazon.in listing — judging the market only")
+        await step("anchor", "warn", f"Couldn't read a {store_label} price — judging the market only")
 
     # 2 — candidate product cards on Google Shopping --------------------------------------
     base_title = anchor.title if anchor else q.value
@@ -143,7 +153,13 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
     if not brand and q.kind != "amazon_asin":
         brand = parse.guess_brand(q.value, anchor.title if anchor else None)
     # URL input: derive the query from the listing. Typed input: search what the user asked for.
-    sq = parse.short_query(base_title, brand) if q.kind == "amazon_asin" and anchor else q.value
+    if q.kind == "amazon_asin" and anchor:
+        sq = parse.short_query(base_title, brand)
+    elif q.kind == "url_slug":
+        sq = parse.product_query(q.value)  # "asics noosa tri 16", not "…running shoes men"
+        base_title = anchor.title if anchor else sq
+    else:
+        sq = q.value
     await step("shopping", "running", f"Finding “{sq}” across Indian stores")
     g = await serp("google_shopping", {"q": sq, **GSHOP}, "Find the same product across Indian stores")
     cards = cards_from_shopping(g or {})
@@ -193,6 +209,21 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
 
     # 4 — market math (code, not LLM) -----------------------------------------------------
     offers = build_offers(anchor, same_cards, stores, brand)
+
+    # Google Shopping India is thin for some categories (fashion, footwear). Brand stores and
+    # retailers often show their price in ordinary Google results, so widen once if needed.
+    usable = [o for o in offers if o.available and o.in_reference and not o.is_anchor]
+    if len(usable) < mk.MIN_STORES:
+        await step("web", "running", f"Few stores so far — checking Google results for “{sq}” prices")
+        d = await serp("google", {"q": f"{sq} price", **GSHOP},
+                       "Find more Indian store prices in Google results (rich snippets)")
+        web = candidates_from_web(d or {}, start_id=2000)
+        resolve.prefilter(base_title, brand, web)
+        await resolve_with_llm(base_title, web)
+        await emit("match", {"stage": "web", "anchor_title": base_title, "candidates": [c.public() for c in web]})
+        offers = build_offers(anchor, same_cards, stores + web, brand)
+        n_web = sum(1 for c in web if c.label == "same")
+        await step("web", "done" if n_web else "warn", f"{n_web} more store price{'s' if n_web != 1 else ''} from Google results")
     google_range = parse_range(im_pr.get("price_range"))
     m = mk.compute_market(offers, google_range)
     v = mk.decide(m, anchor.price if anchor else None, anchor.mrp if anchor else None, offers)
@@ -332,6 +363,51 @@ def cards_from_shopping(g: dict, start_id: int = 0) -> list[resolve.Candidate]:
     return out
 
 
+def anchor_from_store_results(d: dict, url: str, slug: str, domain: str, label: str) -> Anchor | None:
+    """The listing a user pasted (Flipkart, Myntra…), read from Google's index of that store.
+
+    Prefers the result for the exact same listing id; otherwise the best-matching product page.
+    """
+    lid = parse.listing_id(url)
+    results = [r for r in _l(d.get("organic_results")) if isinstance(r, dict) and _s(r.get("link"))]
+    exact = [r for r in results if lid and lid in r["link"].lower()]
+    pool = exact or [r for r in results if _overlap(slug, r.get("title") or "") >= 0.6]
+    for r in pool:
+        price, mrp = parse.snippet_prices(r)
+        if not price:
+            continue
+        snippet = str(r.get("snippet") or "")
+        offer = re.search(r"Buy at ₹\s?([\d,]+)", snippet)
+        rich = _d(_d(r.get("rich_snippet")).get("top")).get("detected_extensions") or {}
+        return Anchor(
+            source=domain.split(".")[0], store=label, title=_s(r.get("title")) or slug, brand=None,
+            price=price, mrp=mrp, link=url, image=_s(r.get("thumbnail")),
+            rating=_num(rich.get("rating")), reviews=_num(rich.get("reviews")),
+            offer_price=parse.parse_inr(offer.group(1)) if offer else None,
+            price_note=("Price from Google's index of this page — the live price may differ"
+                        + ("" if exact and r is exact[0] else " · nearest matching listing")),
+        )
+    return None
+
+
+def candidates_from_web(d: dict, start_id: int) -> list[resolve.Candidate]:
+    """Store prices from ordinary Google results (rich snippets), rupee prices only."""
+    out = []
+    for i, r in enumerate(_l(d.get("organic_results"))):
+        if not isinstance(r, dict) or not _s(r.get("link")):
+            continue
+        price, _mrp = parse.snippet_prices(r)
+        if not price:
+            continue
+        domain, label = parse.store_of(r["link"])
+        out.append(resolve.Candidate(
+            id=start_id + i, title=parse.fix_mojibake(_s(r.get("title")) or ""), store=_s(r.get("source")) or label,
+            price=price, link=r["link"], origin="google",
+            extra={"notes": ["Price from Google search snippet"], "logo": _s(r.get("favicon"))},
+        ))
+    return out
+
+
 def candidates_from_stores(pr: dict, start_id: int) -> list[resolve.Candidate]:
     out = []
     for i, s in enumerate(_l(pr.get("stores"))):
@@ -396,17 +472,21 @@ def build_offers(anchor: Anchor | None, cards: list[resolve.Candidate], stores: 
         if kind == "import":
             o.in_reference = False
         # The listing being judged must not vouch for itself.
-        if anchor and anchor.source == "amazon" and "amazon" in key:
+        if anchor and mk.store_key(anchor.store) in key:
             o.in_reference = False
         cur = best.get(key)
         if cur is None or (not cur.available, cur.price) > (not o.available, o.price):
             best[key] = o
     offers = list(best.values())
     if anchor and anchor.price:
-        offers.append(mk.Offer(store="Amazon.in (this listing)", price=anchor.price, link=anchor.link,
+        notes = [f"Sold by {anchor.seller}"] if anchor.seller else []
+        if anchor.offer_price:
+            notes.append(f"₹{anchor.offer_price:,.0f} with offers")
+        if anchor.price_note:
+            notes.append(anchor.price_note)
+        offers.append(mk.Offer(store=f"{anchor.store} (this listing)", price=anchor.price, link=anchor.link,
                                title=anchor.title, kind="major", rating=anchor.rating, reviews=anchor.reviews,
-                               notes=[f"Sold by {anchor.seller}"] if anchor.seller else [],
-                               origin="amazon", is_anchor=True))
+                               notes=notes, origin=anchor.source, is_anchor=True))
     return offers
 
 

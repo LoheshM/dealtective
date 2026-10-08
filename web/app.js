@@ -15,7 +15,7 @@ const cssUrl = (u) => {
 const cssBg = (u) => { const v = cssUrl(u); return v ? esc(`background-image:${v}`) : ""; };
 
 const ENGINE_NAMES = {
-  amazon: "Amazon Search", amazon_product: "Amazon Product", google_shopping: "Google Shopping",
+  amazon: "Amazon Search", amazon_product: "Amazon Product", google_shopping: "Google Shopping", google: "Google Search",
   google_immersive_product: "Immersive Product", google_lens: "Google Lens",
 };
 const LABELS = {
@@ -29,7 +29,7 @@ let source;
 let lensSource;
 
 function reset() {
-  state = { calls: [], credits: 0, cards: [], stores: [], anchor: null, market: null, verdict: null, offers: [], product: null, voices: null, summary: null, query: "" };
+  state = { calls: [], credits: 0, matches: {}, anchor: null, market: null, verdict: null, offers: [], product: null, voices: null, summary: null, query: "" };
 }
 
 /* ---------- theme ---------- */
@@ -215,11 +215,12 @@ function onAnchor(a) {
   for (const b of a.badges || []) badges.insertAdjacentHTML("beforeend", `<span class="badge">${esc(b)}</span>`);
   if (a.bought) badges.insertAdjacentHTML("beforeend", `<span class="badge soft">${esc(a.bought)}</span>`);
   const bits = [];
-  if (a.price) bits.push(`Amazon.in ${inr(a.price)}`);
+  if (a.price) bits.push(`${a.store || "Amazon.in"} ${inr(a.price)}`);
+  if (a.offer_price) bits.push(`${inr(a.offer_price)} with offers`);
   if (a.mrp) bits.push(`M.R.P. ${inr(a.mrp)}`);
   if (a.rating) bits.push(`★ ${a.rating}${a.reviews ? ` (${Number(a.reviews).toLocaleString("en-IN")})` : ""}`);
   if (a.seller) bits.push(`Sold by ${a.seller}`);
-  $("#product-sub").textContent = bits.join(" · ");
+  $("#product-sub").textContent = bits.join(" · ") + (a.price_note ? ` · ${a.price_note}` : "");
 }
 
 function setProduct(title, image) {
@@ -233,13 +234,12 @@ function setProduct(title, image) {
 
 /* ---------- matching ---------- */
 function onMatch(d) {
-  if (d.stage === "cards") state.cards = d.candidates;
-  else state.stores = d.candidates;
+  state.matches = { ...(state.matches || {}), [d.stage]: d.candidates };
   renderMatch();
 }
 
 function renderMatch() {
-  const all = [...state.cards, ...state.stores];
+  const all = Object.values(state.matches || {}).flat();
   const count = (l) => all.filter((c) => c.label === l).length;
   const excluded = all.length - count("same");
   $("#match-note").textContent = `${count("same")} confirmed · ${excluded} excluded`;
@@ -298,7 +298,7 @@ function renderVerdict() {
 
   const tiles = [];
   if (v.deal_price != null) {
-    tiles.push(tile("This listing", inr(v.deal_price), v.mrp ? `M.R.P. ${inr(v.mrp)}${v.claimed_discount ? ` (−${pct(v.claimed_discount)})` : ""}` : "Amazon.in"));
+    tiles.push(tile("This listing", inr(v.deal_price), v.mrp ? `M.R.P. ${inr(v.mrp)}${v.claimed_discount ? ` (−${pct(v.claimed_discount)})` : ""}` : (state.anchor?.store || "Amazon.in")));
   }
   tiles.push(tile("Market price", m.reference != null ? inr(m.reference) : "—",
     m.status === "ok" ? `median of ${m.store_count} in-stock ${m.basis === "major" ? "major retailers" : "stores"}` : `${m.store_count} matching store${m.store_count === 1 ? "" : "s"} (need 3)`));
@@ -559,7 +559,7 @@ function shareText() {
   const v = state.verdict, m = state.market;
   const t = shortTitle(state.anchor?.title || state.product?.title || state.query);
   const lines = [`Nijam check: ${t}`];
-  if (v.deal_price) lines.push(`Amazon.in: ${inr(v.deal_price)}${v.claimed_discount ? ` (claims ${pct(v.claimed_discount)} off M.R.P. ${inr(v.mrp)})` : ""}`);
+  if (v.deal_price) lines.push(`${state.anchor?.store || "Amazon.in"}: ${inr(v.deal_price)}${v.claimed_discount ? ` (claims ${pct(v.claimed_discount)} off M.R.P. ${inr(v.mrp)})` : ""}`);
   if (m.status === "ok") lines.push(`Market price across ${m.store_count} Indian stores: ${inr(m.reference)}`);
   if (v.real_saving != null) lines.push(v.real_saving_abs >= 0 ? `Real saving vs market: ${inr(v.real_saving_abs)}` : `That's ${inr(-v.real_saving_abs)} above market`);
   if (v.mrp_theatre) lines.push(`M.R.P. is ${v.mrp_multiple.toFixed(1)}× what stores actually charge`);

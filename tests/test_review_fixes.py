@@ -213,3 +213,59 @@ def test_same_price_and_cheaper_context():
 def test_mojibake_repair_reveals_hindi_for():
     t = parse.fix_mojibake("SPL OnePlus Nord CE4 Lite 5G à¤•à¥‡ à¤²à¤¿à¤ - SPL")
     assert "के लि" in t and parse.accessory_word(t)
+
+
+# --- non-Amazon store links (Flipkart etc.) are read from Google's index of the page ----------
+
+FLIPKART = ("https://www.flipkart.com/asics-noosa-tri-16-running-shoes-men/p/itmc9ccf049a204d"
+            "?pid=SHOHGDNDYHFGQG6D&marketplace=FLIPKART")
+
+
+def test_store_url_helpers():
+    assert parse.store_of(FLIPKART) == ("flipkart.com", "Flipkart")
+    assert parse.listing_id(FLIPKART) == "itmc9ccf049a204d"
+    assert parse.product_query(parse.slug_text(FLIPKART)) == "asics noosa tri 16"
+    assert parse.product_query("apple iphone 15 black 128 gb") == "apple iphone 15 black 128 gb"
+
+
+def test_snippet_prices():
+    flipkart_text = {"snippet": "Asics NOOSA TRI 16 (Multicolor , 14). 51%. 11,999. ₹5,899. Buy at ₹5,309."}
+    assert parse.snippet_prices(flipkart_text) == (5899, 11999)
+    rich = {"rich_snippet": {"top": {"detected_extensions": {"price": 10499.0, "currency": "₹"}}},
+            "snippet": "30%. 14,999. ₹10,499."}
+    assert parse.snippet_prices(rich) == (10499, 14999)
+    assert parse.snippet_prices({"snippet": "Free shipping on $140 orders"}) == (None, None)
+
+
+def test_dollar_prices_are_not_rupees():
+    assert parse.parse_inr("$140.00") is None
+    assert parse.parse_inr("₹140") == 140
+
+
+def test_possessive_s_is_not_a_variant():
+    assert parse.variant_markers("ASICS Men's NOOSA TRI 16") == set()
+
+
+def test_anchor_from_store_results_prefers_exact_listing():
+    d = {"organic_results": [
+        {"link": "https://www.flipkart.com/asics-noosa-tri-16/p/itm0af4a0916fb06", "title": "Asics NOOSA TRI 16 Running Shoes For Men",
+         "rich_snippet": {"top": {"detected_extensions": {"price": 10499.0, "currency": "₹"}}}, "snippet": "30%. 14,999. ₹10,499."},
+        {"link": "https://www.flipkart.com/hi/asics-noosa-tri-16/p/itmc9ccf049a204d", "title": "Asics NOOSA TRI 16 (Multicolor , 14)",
+         "snippet": "51%. 11,999. ₹5,899. Buy at ₹5,309. Apply offers"},
+    ]}
+    a = pipeline.anchor_from_store_results(d, FLIPKART, "asics noosa tri 16 running shoes men", "flipkart.com", "Flipkart")
+    assert (a.store, a.price, a.mrp, a.offer_price) == ("Flipkart", 5899, 11999, 5309)
+    assert "Google's index" in a.price_note
+
+
+def test_price_trackers_are_not_stores():
+    assert lab("ASICS Noosa Tri 16", store="Price History", anchor="ASICS Noosa Tri 16") == "reseller"
+    assert lab("ASICS Noosa Tri 16", store="Buyhatke", anchor="ASICS Noosa Tri 16") == "reseller"
+
+
+def test_store_listing_excludes_its_own_marketplace():
+    a = pipeline.Anchor(source="flipkart", store="Flipkart", title="X", brand=None, price=5899, mrp=11999, link="l", image=None)
+    c = Candidate(1, "X", "Flipkart", 6000.0, label="same")
+    offers = pipeline.build_offers(a, [], [c], None)
+    by = {o.store: o for o in offers}
+    assert by["Flipkart"].in_reference is False and by["Flipkart (this listing)"].is_anchor

@@ -75,7 +75,7 @@ uv run uvicorn app.main:app --port 8000
 | `OPENAI_API_KEY` | Recommended | Same-product resolver and summary. Without it, rules-only matching and a template summary are used. |
 | `OPENAI_MODEL` | No | Default `gpt-5.4-mini` |
 | `NIJAM_MODE` | No | `auto` (cache first, then live), `live`, or `replay` |
-| `NIJAM_CREDITS_PER_CHECK` | No | Default 4 |
+| `NIJAM_CREDITS_PER_CHECK` | No | Default 5 |
 | `NIJAM_LIVE_PER_HOUR` | No | Server-wide cap on billed searches per hour (default 40). Beyond it, cached results only. |
 
 **No keys? It still runs.**

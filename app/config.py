@@ -33,7 +33,7 @@ def load_settings() -> Settings:
         openai_key=os.getenv("OPENAI_API_KEY") or None,
         openai_model=os.getenv("OPENAI_MODEL", "gpt-5.4-mini"),
         mode=os.getenv("NIJAM_MODE", "auto"),
-        credits_per_check=int(os.getenv("NIJAM_CREDITS_PER_CHECK", "4")),
+        credits_per_check=int(os.getenv("NIJAM_CREDITS_PER_CHECK", "5")),
         cache_dir=Path(os.getenv("NIJAM_CACHE_DIR", ROOT / "data" / "cache")),
         fixtures_dir=ROOT / "data" / "fixtures",
         cache_ttl_hours=float(os.getenv("NIJAM_CACHE_TTL_HOURS", "24")),

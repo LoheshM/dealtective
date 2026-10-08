@@ -95,7 +95,10 @@ _USED_TITLE_RE = re.compile(r"(?<![a-z])(refurbished|refurb|renewed|pre[- ]?owne
 _USED_NOTE_RE = re.compile(r"(?<![a-z])(refurbished|refurb|renewed|pre[- ]?owned|second[- ]hand|open[- ]box|used)(?![a-z])", re.IGNORECASE)
 _RESELLER_STORE_SUBSTR = ("gift", "snapmint", "wholesale", "bulk")
 # B2B marketplaces, directories and deal forums list prices that aren't a retail checkout price.
-_NONRETAIL_STORE_SUBSTR = ("tradeindia", "indiamart", "justdial", "desidime", "alibaba", "exportersindia")
+_NONRETAIL_STORE_SUBSTR = ("tradeindia", "indiamart", "justdial", "desidime", "alibaba", "exportersindia",
+                           # price trackers / comparison sites quote other stores' prices
+                           "price history", "pricehistory", "price-history", "buyhatke", "pricebefore", "smartprix",
+                           "91mobiles", "mysmartprice", "pricedekho", "cashkaro", "keepa", "gadgets360", "compareraja")
 # Sellers whose catalogue is (almost) entirely refurbished / pre-owned stock.
 _USED_STORE_SUBSTR = ("cashify", "gameloot", "ovantica", "budli", "controlz", "yaantra", "2gud", "triveni world",
                       "refurb", "renewed")
@@ -115,7 +118,7 @@ def deterministic(anchor_title: str, brand: str | None, cand: Candidate) -> tupl
     if (store_toks | toks) & parse.RESELLER_WORDS or any(w in store_l for w in _RESELLER_STORE_SUBSTR):
         return "reseller", "gift / EMI / bulk reseller — not a retail price"
     if any(w in store_l for w in _NONRETAIL_STORE_SUBSTR):
-        return "reseller", "B2B / directory / forum listing — not a retail price"
+        return "reseller", "B2B / directory / price-tracker listing — not a store price"
     if any(w in store_l for w in _USED_STORE_SUBSTR) and not _USED_TITLE_RE.search(anchor_title):
         return "different", "refurbished / pre-owned seller"
     if (_USED_TITLE_RE.search(title) and not _USED_TITLE_RE.search(anchor_title)) or _USED_NOTE_RE.search(notes):
