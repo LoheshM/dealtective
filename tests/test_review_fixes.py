@@ -269,3 +269,13 @@ def test_store_listing_excludes_its_own_marketplace():
     offers = pipeline.build_offers(a, [], [c], None)
     by = {o.store: o for o in offers}
     assert by["Flipkart"].in_reference is False and by["Flipkart (this listing)"].is_anchor
+
+
+def test_listing_image_prefers_exact_listing_from_inline_images():
+    d = {"inline_images": [
+        {"source": "https://www.flipkart.com/x/p/itm0af4a0916fb06", "original": "https://rukminim2.flixcart.com/other.jpg"},
+        {"source": "https://www.flipkart.com/hi/x/p/itmc9ccf049a204d", "original": "https://rukminim2.flixcart.com/mine.jpg"},
+    ], "organic_results": []}
+    assert pipeline.listing_image(d, "itmc9ccf049a204d", "flipkart.com").endswith("mine.jpg")
+    assert pipeline.listing_image(d, "itmzzzz", "flipkart.com").endswith("other.jpg")
+    assert pipeline.listing_image({"inline_images": [{"original": "http://insecure"}]}, None, "x.com") is None

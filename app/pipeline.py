@@ -381,12 +381,39 @@ def anchor_from_store_results(d: dict, url: str, slug: str, domain: str, label: 
         rich = _d(_d(r.get("rich_snippet")).get("top")).get("detected_extensions") or {}
         return Anchor(
             source=domain.split(".")[0], store=label, title=_s(r.get("title")) or slug, brand=None,
-            price=price, mrp=mrp, link=url, image=_s(r.get("thumbnail")),
+            price=price, mrp=mrp, link=url, image=_s(r.get("thumbnail")) or listing_image(d, lid, domain),
             rating=_num(rich.get("rating")), reviews=_num(rich.get("reviews")),
             offer_price=parse.parse_inr(offer.group(1)) if offer else None,
             price_note=("Price from Google's index of this page — the live price may differ"
                         + ("" if exact and r is exact[0] else " · nearest matching listing")),
         )
+    return None
+
+
+def listing_image(d: dict, lid: str | None, domain: str) -> str | None:
+    """Product photo for a store listing from Google's `inline_images` block.
+
+    Organic results for store pages often carry no thumbnail; the image strip usually has the
+    store's own photo. Prefer the exact listing id, then any image from the same store, then any.
+    """
+    images = [im for im in _l(d.get("inline_images")) if isinstance(im, dict)]
+
+    def url(im: dict) -> str | None:
+        for k in ("original", "thumbnail"):
+            u = _s(im.get(k))
+            if u and u.startswith("https://"):
+                return u
+        return None
+
+    for want in (lambda im: lid and lid in str(im.get("source") or "").lower(),
+                 lambda im: domain in str(im.get("source") or "").lower(),
+                 lambda im: True):
+        for im in images:
+            if want(im) and url(im):
+                return url(im)
+    for r in _l(d.get("organic_results")):  # a sibling listing's thumbnail (same product, other size)
+        if isinstance(r, dict) and _s(r.get("thumbnail")) and domain in str(r.get("link") or ""):
+            return r["thumbnail"]
     return None
 
 

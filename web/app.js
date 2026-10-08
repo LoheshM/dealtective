@@ -261,6 +261,7 @@ function onMarket(d) {
   state.offers = d.offers;
   state.product = d.product;
   if (!state.anchor) setProduct(d.product?.title || state.query, d.product?.image);
+  else if (!safeUrl(state.anchor.image)) setProduct(null, d.product?.image);
   renderVerdict();
   renderNumberLine();
   renderStores();

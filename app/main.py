@@ -34,7 +34,8 @@ EXAMPLES = [
 # Lens runs only on product images the app itself surfaced (Amazon / Google image CDNs), so the
 # endpoint can't be used as a free reverse-image-search proxy on our SerpApi key.
 LENS_HOSTS = ("m.media-amazon.com", "images-na.ssl-images-amazon.com", "images-eu.ssl-images-amazon.com",
-              ".gstatic.com", ".googleusercontent.com", ".ggpht.com")
+              ".gstatic.com", ".googleusercontent.com", ".ggpht.com", ".flixcart.com", "assets.myntassets.com",
+              "assets.ajio.com", "serpapi.com")
 
 
 def lens_host_allowed(url: str) -> bool:
