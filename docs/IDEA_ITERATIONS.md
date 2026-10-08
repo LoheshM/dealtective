@@ -134,3 +134,7 @@ Headline: **"Claimed 80% OFF → your real saving today: ₹40 (5%)."**
   - Google Immersive Product (`more_stores`): the cross-store market, rating distribution, user reviews, forum threads and YouTube reviews.
   - Google Lens (optional): photo provenance.
 - **Hard budget:** 3 credits per verdict (+1 if the user asks for Lens), with a disk cache and replay mode.
+
+## Round 11 — name
+
+The working name "AsliDaam" (Hindi) was replaced with **Nijam** (நிஜம், Tamil for "real/truth"), tagline **நிஜ விலை · the real price**. No existing Indian price tool by that name was found.

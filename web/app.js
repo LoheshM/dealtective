@@ -1,4 +1,4 @@
-// AsliDaam front end — no build step. Streams pipeline events over SSE and renders them.
+// Nijam front end — no build step. Streams pipeline events over SSE and renders them.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const inr = (n) => (n == null || isNaN(n) ? "—" : "₹" + Math.round(n).toLocaleString("en-IN"));
@@ -22,7 +22,7 @@ const LABELS = {
   good_deal: "Good deal", fair_price: "Fair price", above_market: "Above market",
   not_enough_data: "Not enough data", no_deal_price: "Market check", unusually_low: "Unusually low · verify seller",
 };
-const KIND = { official: "Official", major: "Major retailer", quick: "Quick commerce", other: "Other store" };
+const KIND = { official: "Official", major: "Major retailer", quick: "Quick commerce", other: "Other store", import: "International" };
 
 let state;
 let source;
@@ -35,13 +35,13 @@ function reset() {
 /* ---------- theme ---------- */
 (function initTheme() {
   let saved = null;
-  try { saved = localStorage.getItem("aslidaam-theme"); } catch { /* storage may be blocked */ }
+  try { saved = localStorage.getItem("nijam-theme"); } catch { /* storage may be blocked */ }
   if (saved) document.documentElement.dataset.theme = saved;
   $("#theme-toggle").addEventListener("click", () => {
     const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("aslidaam-theme", next); } catch { /* ignore */ }
+    try { localStorage.setItem("nijam-theme", next); } catch { /* ignore */ }
     if (state?.market) renderNumberLine();
   });
 })();
@@ -291,14 +291,17 @@ function renderVerdict() {
       ? `Claimed <span class="strike">${pct(v.claimed_discount)} off</span><span class="arrow">→</span>${real}`
       : real.charAt(0).toUpperCase() + real.slice(1);
   }
-  $("#headline").innerHTML = head;
+  const ctx = [];
+  if (v.cheaper_at) ctx.push(`<b>${inr(v.cheaper_at.price)}</b> at ${esc(v.cheaper_at.store)}: cheaper than this listing`);
+  else if (v.same_price_at?.length) ctx.push(`Same price at ${v.same_price_at.map(esc).join(", ")}`);
+  $("#headline").innerHTML = head + (ctx.length ? `<span class="context">${ctx.join(" · ")}</span>` : "");
 
   const tiles = [];
   if (v.deal_price != null) {
     tiles.push(tile("This listing", inr(v.deal_price), v.mrp ? `M.R.P. ${inr(v.mrp)}${v.claimed_discount ? ` (−${pct(v.claimed_discount)})` : ""}` : "Amazon.in"));
   }
   tiles.push(tile("Market price", m.reference != null ? inr(m.reference) : "—",
-    m.status === "ok" ? `median of ${m.store_count} in-stock stores` : `${m.store_count} matching store${m.store_count === 1 ? "" : "s"} (need 3)`));
+    m.status === "ok" ? `median of ${m.store_count} in-stock ${m.basis === "major" ? "major retailers" : "stores"}` : `${m.store_count} matching store${m.store_count === 1 ? "" : "s"} (need 3)`));
   if (v.real_saving != null) {
     tiles.push(tile("Real saving", v.real_saving_abs > 0 ? inr(v.real_saving_abs) : v.real_saving_abs < 0 ? "−" + inr(-v.real_saving_abs) : "₹0",
       v.real_saving_abs < 0 ? "you'd pay above market" : `${pct(Math.max(0, v.real_saving))} vs market`, false));
@@ -441,9 +444,9 @@ function renderStores() {
     if (o.flag === "low_outlier") flags.push('<span class="flagchip warn">Far below market · verify seller</span>');
     if (o.flag === "high_outlier") flags.push('<span class="flagchip warn">Well above market</span>');
     if (!o.available) flags.push('<span class="flagchip">Out of stock</span>');
-    if (!o.in_reference && !o.is_anchor) flags.push('<span class="flagchip">Same marketplace · not in market price</span>');
+    if (!o.in_reference && !o.is_anchor && o.kind !== "import") flags.push('<span class="flagchip">Same marketplace · not in market price</span>');
     for (const n of o.notes || []) {
-      if (/pincode/i.test(n)) flags.push(`<span class="flagchip">${esc(n)}</span>`);
+      if (/pincode|international/i.test(n)) flags.push(`<span class="flagchip${/international/i.test(n) ? " warn" : ""}">${esc(n)}</span>`);
       else if (/^sold by/i.test(n)) flags.push(`<span class="flagchip">${esc(n)}</span>`);
     }
     const logo = safeUrl(o.logo)
@@ -555,7 +558,7 @@ function shortTitle(t) { return (t || "").split(/[,|(]/)[0].trim().slice(0, 70);
 function shareText() {
   const v = state.verdict, m = state.market;
   const t = shortTitle(state.anchor?.title || state.product?.title || state.query);
-  const lines = [`AsliDaam check: ${t}`];
+  const lines = [`Nijam check: ${t}`];
   if (v.deal_price) lines.push(`Amazon.in: ${inr(v.deal_price)}${v.claimed_discount ? ` (claims ${pct(v.claimed_discount)} off M.R.P. ${inr(v.mrp)})` : ""}`);
   if (m.status === "ok") lines.push(`Market price across ${m.store_count} Indian stores: ${inr(m.reference)}`);
   if (v.real_saving != null) lines.push(v.real_saving_abs >= 0 ? `Real saving vs market: ${inr(v.real_saving_abs)}` : `That's ${inr(-v.real_saving_abs)} above market`);

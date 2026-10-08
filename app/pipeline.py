@@ -1,4 +1,4 @@
-"""The AsliDaam verification pipeline.
+"""The Nijam verification pipeline.
 
 query -> Amazon.in anchor listing -> Google Shopping candidates -> same-product resolution
       -> Google Immersive Product stores -> resolution -> market math -> narrative
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+import statistics
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -146,10 +147,8 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
     await step("shopping", "running", f"Finding “{sq}” across Indian stores")
     g = await serp("google_shopping", {"q": sq, **GSHOP}, "Find the same product across Indian stores")
     cards = cards_from_shopping(g or {})
-    if not anchor and cards:
-        ref = pick_reference_card(cards, q.value)
-        if ref is not None:
-            base_title = ref.title
+    # Without an Amazon listing, the user's own words define the product. (Borrowing a Shopping
+    # card's title here once turned "Nord CE4 Lite" into a pre-owned "Nord CE 2 Lite".)
     resolve.prefilter(base_title, brand, cards)
     await resolve_with_llm(base_title, cards)
     same_cards = [c for c in cards if c.label == "same"]
@@ -261,17 +260,20 @@ def _num(x: Any) -> float | None:
 
 def _overlap(query: str, title: str) -> float:
     qt = parse.core_tokens(query)
+    tt = set(parse.tokens(title))
+    # Amazon often drops the brand from titles ("iPhone 15 (128 GB) - Blue"); don't penalise that.
+    brand = parse.guess_brand(query)
+    if brand and brand.lower() not in tt:
+        qt.discard(brand.lower())
     if not qt:
         return 0.0
-    tt = set(parse.tokens(title))
     return len(qt & tt) / len(qt)
 
 
 def anchor_from_search(d: dict, query: str) -> Anchor | None:
-    best, best_score = None, 0.0
+    scored: list[tuple[float, float, dict]] = []
     q_models = resolve._model_numbers(query)
     q_marks = parse.variant_markers(query)
-    q_toks = set(parse.tokens(query))
     for i, o in enumerate(_l(d.get("organic_results"))):
         if not isinstance(o, dict):
             continue
@@ -280,15 +282,21 @@ def anchor_from_search(d: dict, query: str) -> Anchor | None:
             continue
         if q_models and not all(resolve.has_model(title, m) for m in q_models):
             continue  # every model token the user typed must be in the listing (HD9252/90 ≠ HD9252/70)
-        if (set(parse.tokens(title)) & parse.ACCESSORY_WORDS) - q_toks:
-            continue
+        if parse.accessory_word(title, query):
+            continue  # "80mm Headphone Cushion Compatible with Rockerz 450"
         if parse.variant_markers(resolve._head(title)) - q_marks:
             continue  # "Redmi Note 13" or "141 Pro" when the user asked for "Redmi 13" / "141"
         score = _overlap(query, title) - (0.15 if o.get("sponsored") else 0) - i * 0.01
-        if score > best_score:
-            best, best_score = o, score
-    if best is None or best_score < 0.5:
+        scored.append((score, parse.parse_inr(o.get("price")), o))
+    if not scored or max(s for s, _, _ in scored) < 0.5:
         return None
+    # Several near-identical matches (different sellers/colours): judge the typical Amazon listing,
+    # not whichever third-party seller happens to rank first. Take the cheapest close match that
+    # isn't suspiciously far below the others.
+    top = max(s for s, _, _ in scored)
+    close = [(p, o) for s, p, o in scored if s >= top - 0.1]
+    mid = statistics.median(p for p, _ in close)
+    best = min((x for x in close if x[0] >= 0.6 * mid), key=lambda x: x[0])[1]
     return Anchor(
         source="amazon", title=best["title"], brand=None, price=parse.parse_inr(best.get("price")),
         mrp=parse.parse_inr(best.get("old_price")), link=_s(best.get("link_clean")) or _s(best.get("link")),
@@ -307,7 +315,7 @@ def cards_from_shopping(g: dict, start_id: int = 0) -> list[resolve.Candidate]:
         if not isinstance(r, dict):
             continue
         price = parse.parse_inr(r.get("price"))
-        title = _s(r.get("title"))
+        title = parse.fix_mojibake(_s(r.get("title")) or "") or None
         if not title or price is None:
             continue
         dedupe = (r.get("source"), title, price)
@@ -334,17 +342,13 @@ def candidates_from_stores(pr: dict, start_id: int) -> list[resolve.Candidate]:
             continue
         notes = [n for n in _l(s.get("details_and_offers")) if isinstance(n, str)]
         out.append(resolve.Candidate(
-            id=start_id + i, title=_s(s.get("title")) or _s(pr.get("title")) or "", store=_s(s.get("name")) or "?",
+            id=start_id + i, title=parse.fix_mojibake(_s(s.get("title")) or _s(pr.get("title")) or ""),
+            store=_s(s.get("name")) or "?",
             price=price, link=_s(s.get("link")), origin="google_immersive_product",
             extra={"rating": _num(s.get("rating")), "reviews": _num(s.get("reviews")), "logo": _s(s.get("logo")),
                    "notes": notes},
         ))
     return out
-
-
-def pick_reference_card(cards: list[resolve.Candidate], query: str) -> resolve.Candidate | None:
-    scored = sorted(cards, key=lambda c: (-_overlap(query, c.title), c.id))
-    return scored[0] if scored and _overlap(query, scored[0].title) >= 0.5 else None
 
 
 def choose_card(same: list[resolve.Candidate], brand: str | None) -> resolve.Candidate | None:
@@ -354,7 +358,7 @@ def choose_card(same: list[resolve.Candidate], brand: str | None) -> resolve.Can
 
     def rank(c: resolve.Candidate) -> tuple:
         kind = mk.classify_store(c.store, brand)
-        pref = {"official": 0, "major": 1, "quick": 2, "other": 3}[kind]
+        pref = {"official": 0, "major": 1, "quick": 2, "other": 3, "import": 4}.get(kind, 5)
         return (pref, -(c.extra.get("reviews") or 0), c.id)
 
     return sorted(with_token, key=rank)[0]
@@ -384,9 +388,13 @@ def build_offers(anchor: Anchor | None, cards: list[resolve.Candidate], stores: 
         kind = mk.classify_store(c.store, brand)
         if kind == "quick":
             notes.append("Price may vary by pincode")
+        if kind == "import":
+            notes.append("International reseller · import price")
         o = mk.Offer(store=c.store, price=c.price, link=c.link, title=c.title, kind=kind,
                      rating=c.extra.get("rating"), reviews=c.extra.get("reviews"), notes=notes,
                      logo=c.extra.get("logo"), origin=c.origin, available=not mk.is_unavailable(notes))
+        if kind == "import":
+            o.in_reference = False
         # The listing being judged must not vouch for itself.
         if anchor and anchor.source == "amazon" and "amazon" in key:
             o.in_reference = False

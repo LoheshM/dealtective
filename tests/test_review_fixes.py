@@ -141,3 +141,75 @@ async def test_hourly_cap_refunds_the_per_check_budget(tmp_path, monkeypatch):
 async def test_short_link_expansion_is_best_effort():
     assert await pipeline.expand_short_link("Redmi 13 5G") == "Redmi 13 5G"
     assert await pipeline.expand_short_link("https://www.amazon.in/dp/B0F8BVSK21") == "https://www.amazon.in/dp/B0F8BVSK21"
+
+
+# --- issues found by cross-checking real products against web prices (Oct 2026) -------------
+
+@pytest.mark.parametrize(("title", "hit"), [
+    ("80mm Headphone Cushion Compatible with Rockerz 450, 450 Pro", True),
+    ("Charging Cable for Airdopes 141", True),
+    ("Soft Mobile Back Cover for OnePlus Nord CE4 Lite 5G", True),
+    ("boAt Rockerz 450 Bluetooth On Ear Headphones with Mic, Padded Ear Cushions", False),
+    ("boAt Airdopes 141 with Charging Case", False),
+    ("Philips Essential HD9252/90 Stand-alone Hot Air fryer", False),
+    ("Redmi 13 5G Hawaiian Blue Smartphone | 5000mAH Battery", False),
+])
+def test_accessory_detection_on_real_titles(title, hit):
+    assert bool(parse.accessory_word(title)) is hit
+
+
+def test_model_number_never_matches_inside_a_decimal_or_spec():
+    from app.resolve import _model_numbers, has_model
+    assert not has_model("Apple iPhone 17e 256 GB: 15.40 cm (6.1 inch)", "15")
+    assert has_model("OnePlus Nord CE 4 Lite 5G", "ce4")
+    assert not has_model("OnePlus Nord CE6 Lite", "ce4")
+    assert "80mm" not in _model_numbers("80mm Headphone Cushion Rockerz 450")
+
+
+def test_amazon_title_without_brand_and_spaced_storage_still_matches():
+    d = {"organic_results": [{"title": "iPhone 15 (128 GB) - Blue", "price": "₹74,900"}]}
+    a = pipeline.anchor_from_search(d, "Apple iPhone 15 128GB")
+    assert a is not None and a.price == 74900
+
+
+def test_anchor_prefers_typical_price_over_first_ranked_seller():
+    d = {"organic_results": [
+        {"title": "Redmi 13 5G 8GB 128GB Orchid Pink", "price": "₹23,999"},
+        {"title": "Redmi 13 5G 8GB 128GB Hawaiian Blue", "price": "₹13,499"},
+    ]}
+    assert pipeline.anchor_from_search(d, "Redmi 13 5G 8GB 128GB").price == 13499
+
+
+def test_import_and_nonretail_and_refurb_sellers():
+    assert mk.classify_store("desertcart.com.sa", None) == "import"
+    assert mk.classify_store("ubuy.co.in", None) == "import"
+    assert mk.classify_store("Croma", None) == "major"
+    assert mk.classify_store("Meesho", None) == "other"
+    assert lab("Redmi 13 5G 8GB 128GB", store="Tradeindia.com") == "reseller"
+    assert lab("Redmi 13 5G 8GB 128GB", store="Cashify") == "different"
+
+
+def test_shopsy_counts_as_flipkart():
+    assert mk.store_key("Shopsy By Flipkart") == mk.store_key("Flipkart")
+
+
+def test_thin_market_flags_use_google_range_not_a_junk_median():
+    offers = [_offer("Flipkart", 200), _offer("Cashify", 15699, kind="other")]
+    mk.compute_market(offers, google_range=(12847, 19999))
+    assert {o.store: o.flag for o in offers} == {"Flipkart": "low_outlier", "Cashify": None}
+
+
+def test_same_price_and_cheaper_context():
+    offers = [_offer("Amazon.in (this listing)", 19989, is_anchor=True), _offer("Amazon.in", 19989, in_reference=False),
+              _offer("Flipkart", 19990), _offer("Croma", 22990), _offer("Vijay Sales", 24990), _offer("Reliance Digital", 25990)]
+    v = mk.decide(mk.compute_market(offers), 19989, 34990, offers)
+    assert v.same_price_at == ["Flipkart"]  # not Amazon's own second row
+    assert v.cheaper_at is None
+    offers.append(_offer("Tata CLiQ", 18000))
+    v = mk.decide(mk.compute_market(offers), 19989, 34990, offers)
+    assert v.cheaper_at["store"] == "Tata CLiQ" and v.label == "fair_price"
+
+
+def test_mojibake_repair_reveals_hindi_for():
+    t = parse.fix_mojibake("SPL OnePlus Nord CE4 Lite 5G à¤•à¥‡ à¤²à¤¿à¤ - SPL")
+    assert "के लि" in t and parse.accessory_word(t)

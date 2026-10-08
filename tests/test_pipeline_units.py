@@ -120,13 +120,6 @@ def test_choose_card_prefers_official_then_reviews():
     assert pipeline.choose_card([], None) is None
 
 
-def test_pick_reference_card():
-    cards = [_cand(1, "s", 1), _cand(2, "s", 1)]
-    cards[0].title, cards[1].title = "Something else", "Redmi 13 5G 8GB 128GB"
-    assert pipeline.pick_reference_card(cards, "Redmi 13 5G 8GB 128GB").id == 2
-    assert pipeline.pick_reference_card(cards, "Sony WH-1000XM5") is None
-
-
 def test_build_offers():
     anchor = pipeline.Anchor(source="amazon", title="X", brand="boAt", price=799, mrp=3990, link="l", image=None,
                              seller="Seller X")

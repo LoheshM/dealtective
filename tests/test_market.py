@@ -37,7 +37,7 @@ def test_store_key_equal(a, b):
 
 
 def test_store_key_distinct():
-    assert store_key("Flipkart") != store_key("Shopsy By Flipkart")
+    assert store_key("Flipkart") == store_key("Shopsy By Flipkart")  # Flipkart's own storefront counts once
     assert store_key("Myntra") != store_key("Amazon.in")
     assert store_key("") == ""
     assert store_key(None) == ""

@@ -98,8 +98,29 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 ACCESSORY_WORDS = {
     "case", "cover", "skin", "pouch", "sleeve", "tempered", "protector", "strap", "band", "holder",
     "stand", "sticker", "decal", "replacement", "spare", "tips", "eartips", "cable", "adapter",
-    "charger", "dock", "keychain", "lanyard", "mount", "film", "guard", "dummy",
+    "charger", "dock", "keychain", "lanyard", "mount", "film", "guard", "dummy", "cushion", "cushions",
+    "earpads", "earpad", "pads", "foam", "screenguard",
 }
+# "Compatible with X" / "for OnePlus Nord" phrasing is how accessory listings name the product they fit.
+ACCESSORY_PHRASE_RE = re.compile(r"(?<![a-z])(compatible (with|for)|replacement for)(?![a-z])|के लि", re.I)  # Hindi "के लिए" = "for"
+
+
+def fix_mojibake(text: str) -> str:
+    """Some marketplace titles arrive double-encoded ('à¤•à¥‡' instead of 'के'). Repair when possible."""
+    if not text or "à¤" not in text and "à¥" not in text:
+        return text
+    out = bytearray()
+    for ch in text:  # byte-by-byte: tolerate characters that were already lost upstream
+        for enc in ("cp1252", "latin-1"):
+            try:
+                out += ch.encode(enc)
+                break
+            except UnicodeEncodeError:
+                continue
+        else:
+            out += ch.encode("utf-8")
+    fixed = out.decode("utf-8", errors="ignore")
+    return fixed if fixed.strip() else text
 RESELLER_WORDS = {"gift", "gifts", "gifting", "corporate", "emi", "snapmint", "bulk", "wholesale"}
 
 COLOUR_WORDS = {
@@ -116,8 +137,43 @@ STOPWORDS = {
 }
 
 
+_SIZE_SPLIT_RE = re.compile(r"([0-9])\s+(gb|tb|mb)(?![a-z])", re.I)
+
+
 def tokens(title: str) -> list[str]:
-    return _TOKEN_RE.findall((title or "").lower())
+    # "128 GB" and "128GB" must be the same token
+    return _TOKEN_RE.findall(_SIZE_SPLIT_RE.sub(r"\1\2", (title or "").lower()))
+
+
+def title_head(title: str) -> str:
+    """The part of a listing title before the first comma / bracket / pipe / ' - '."""
+    return re.split(r"[,|(\[]| - | – ", title or "", maxsplit=1)[0]
+
+
+# A genuine product mentions its own parts as features: "with Charging Case", "Padded Ear Cushions".
+_FEATURE_PRECEDERS = {"charging", "with", "padded", "ear", "wireless", "carry", "carrying", "magnetic", "and"}
+
+
+def accessory_word(title: str, anchor_title: str = "") -> str | None:
+    """Return the accessory word if `title` is an accessory listing ('Silicone Case for Airdopes 141',
+    '80mm Headphone Cushion Compatible with Rockerz 450'), else None.
+
+    If the anchor itself is an accessory (the user is pricing a case), nothing is filtered.
+    """
+    if anchor_title and accessory_word(anchor_title):
+        return None
+    # "Stand-alone air fryer" is not a stand
+    title = re.sub(r"stand[\s-]?alone", "standalone", title or "", flags=re.I)
+    toks = tokens(title_head(title)) or tokens(title)
+    for i, t in enumerate(toks):
+        if t not in ACCESSORY_WORDS:
+            continue
+        # "Charging Cable for Airdopes 141": an accessory word followed by "for" is always an accessory
+        if i == 0 or toks[i - 1] not in _FEATURE_PRECEDERS or "for" in toks[i + 1:i + 4]:
+            return t
+    if ACCESSORY_PHRASE_RE.search(title or ""):
+        return "compatible-with listing"
+    return None
 
 
 def generation(title: str) -> str | None:
@@ -129,6 +185,9 @@ def generation(title: str) -> str | None:
 
 def storage(title: str) -> set[str]:
     return {f"{n}{u.lower()}" for n, u in _STORAGE_RE.findall(title or "")}
+
+
+NOISE_CANCEL_RE = re.compile(r"noise[\s-]?cancel", re.I)
 
 
 def variant_markers(title: str) -> set[str]:

@@ -95,7 +95,6 @@ def test_accessory_checked_before_reseller():
         ("boAt Airdopes 141", "boAt Airdopes 121v2"),
         ("boAt Airdopes 141 Gen 2", "boAt Airdopes 121v2 TWS Earbuds"),
         ("boAt Airdopes 141", "boAt Airdopes 1410"),
-        ("Philips HD9252/90 Air Fryer", "Philips HD9252/70 Air Fryer"),
         ("Redmi 13 5G 8GB 128GB", "Redmi 13C 5G 8GB 128GB"),
         ("Sony WH-1000XM5", "Sony WH-1000XM4"),
     ],
@@ -110,8 +109,14 @@ def test_slash_model_suffix_cannot_be_borrowed_from_elsewhere_in_title():
     # Real Amazon.in title: the '90' in '90% less fat' must not satisfy HD9252/90.
     title = "Essential Air Fryer HD9252/70 with Rapid Air Technology, uses up to 90% less fat, 7 Presets Touch Screen"
     lab, reason = deterministic(PHILIPS_90, "Philips", cand(title))
-    assert lab == "different"
-    assert "hd9252/90" in reason
+    # same base model with a different suffix is a variant the resolver may judge, never "same" by rule
+    assert lab == "variant"
+    assert "HD9252/90" in reason
+
+
+def test_slash_suffix_mismatch_is_variant_not_same():
+    lab, reason = deterministic("Philips HD9252/90 Air Fryer", None, cand("Philips HD9252/70 Air Fryer"))
+    assert lab == "variant" and "suffix differs" in reason
 
 
 def test_slash_model_matches_itself():

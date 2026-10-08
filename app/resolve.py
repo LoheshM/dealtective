@@ -69,12 +69,23 @@ def _model_numbers(title: str) -> set[str]:
     return slash | {
         t for t in parse.tokens(head)
         if any(c.isdigit() for c in t) and len(t) <= 8 and t not in NON_MODEL and not (t.isdigit() and len(t) == 1)
+        and not _SPEC_UNIT_RE.fullmatch(t)
     }
 
 
+# Spec values are not model numbers: 80mm, 40mm, 5000mah, 120hz, 48hrs, 65w, 1.5l (→ "5l"), 6.7inch …
+_SPEC_UNIT_RE = re.compile(r"[0-9]+(mm|cm|mah|hz|khz|hrs|hr|h|w|v|l|ltr|kg|g|inch|in|mp|db|ms|gbps|mbps|x)")
+
+
 def has_model(title: str, model: str) -> bool:
-    """True when `model` (from `_model_numbers`) appears in `title` as a whole token."""
-    return re.search(rf"(?<![a-z0-9]){re.escape(model)}(?![a-z0-9])", (title or "").lower()) is not None
+    """True when `model` (from `_model_numbers`) appears in `title` as a whole token.
+
+    Separators between letter and digit runs are optional ('CE4' == 'CE 4' == 'CE-4'), and a
+    number never matches inside a decimal ('15' must not match '15.40 cm').
+    """
+    parts = re.findall(r"[a-z]+|[0-9]+|/", model)
+    pattern = r"[\s-]?".join(re.escape(p) for p in parts)
+    return re.search(rf"(?<![a-z0-9.]){pattern}(?![a-z0-9]|\.[0-9])", (title or "").lower()) is not None
 
 
 NON_MODEL = {"5g", "4g", "3g", "lte", "2in1", "3in1", "4k", "8k", "1080p", "720p", "2024", "2025", "2026"}
@@ -83,6 +94,11 @@ NON_MODEL = {"5g", "4g", "3g", "lte", "2in1", "3in1", "4k", "8k", "1080p", "720p
 _USED_TITLE_RE = re.compile(r"(?<![a-z])(refurbished|refurb|renewed|pre[- ]?owned|second[- ]hand|open[- ]box)(?![a-z])", re.IGNORECASE)
 _USED_NOTE_RE = re.compile(r"(?<![a-z])(refurbished|refurb|renewed|pre[- ]?owned|second[- ]hand|open[- ]box|used)(?![a-z])", re.IGNORECASE)
 _RESELLER_STORE_SUBSTR = ("gift", "snapmint", "wholesale", "bulk")
+# B2B marketplaces, directories and deal forums list prices that aren't a retail checkout price.
+_NONRETAIL_STORE_SUBSTR = ("tradeindia", "indiamart", "justdial", "desidime", "alibaba", "exportersindia")
+# Sellers whose catalogue is (almost) entirely refurbished / pre-owned stock.
+_USED_STORE_SUBSTR = ("cashify", "gameloot", "ovantica", "budli", "controlz", "yaantra", "2gud", "triveni world",
+                      "refurb", "renewed")
 
 
 def deterministic(anchor_title: str, brand: str | None, cand: Candidate) -> tuple[str, str]:
@@ -93,21 +109,34 @@ def deterministic(anchor_title: str, brand: str | None, cand: Candidate) -> tupl
     store_toks = set(parse.tokens(store_l))
     notes = " ".join(str(n) for n in (cand.extra.get("notes") or []) if n)
 
-    acc = (toks & parse.ACCESSORY_WORDS) - a_toks
+    acc = parse.accessory_word(title, anchor_title)
     if acc:
-        return "accessory", f"looks like an accessory ({sorted(acc)[0]})"
+        return "accessory", f"looks like an accessory ({acc})"
     if (store_toks | toks) & parse.RESELLER_WORDS or any(w in store_l for w in _RESELLER_STORE_SUBSTR):
         return "reseller", "gift / EMI / bulk reseller — not a retail price"
+    if any(w in store_l for w in _NONRETAIL_STORE_SUBSTR):
+        return "reseller", "B2B / directory / forum listing — not a retail price"
+    if any(w in store_l for w in _USED_STORE_SUBSTR) and not _USED_TITLE_RE.search(anchor_title):
+        return "different", "refurbished / pre-owned seller"
     if (_USED_TITLE_RE.search(title) and not _USED_TITLE_RE.search(anchor_title)) or _USED_NOTE_RE.search(notes):
         return "different", "refurbished / pre-owned listing"
 
     a_models = _model_numbers(anchor_title)
     missing_models = {m for m in a_models if not has_model(title, m)}
     if missing_models:
+        # Same base model, different regional/colour suffix (HD9252/90 vs HD9252/70): let the
+        # resolver decide rather than calling it a different product outright.
+        if all("/" in m and has_model(title, m.split("/")[0]) for m in missing_models):
+            return "variant", f"doesn't say {' '.join(sorted(missing_models)).upper()} (suffix differs)"
         return "different", f"model {' '.join(sorted(missing_models))} not in title"
 
     a_marks = parse.variant_markers(_head(anchor_title))
     c_marks = parse.variant_markers(_head(title))
+    # "ANC" on one side and "Active Noise Cancelling" spelled out on the other are the same feature.
+    if "anc" in c_marks and parse.NOISE_CANCEL_RE.search(anchor_title):
+        a_marks.add("anc")
+    if "anc" in a_marks and parse.NOISE_CANCEL_RE.search(title):
+        c_marks.add("anc")
     added, missing = c_marks - a_marks, a_marks - c_marks
     if added:
         bits = ["has " + ", ".join(sorted(_pretty(m) for m in added))]

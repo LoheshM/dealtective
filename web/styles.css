@@ -276,6 +276,8 @@ h1 em {
 .headline { margin: 12px 0 0; font-family: var(--display); font-weight: 650; font-size: clamp(22px, 3.4vw, 32px); line-height: 1.15; letter-spacing: -.015em; }
 .headline .strike { text-decoration: line-through; text-decoration-thickness: 3px; color: var(--muted); }
 .headline .arrow { color: var(--accent); padding: 0 .15em; }
+.headline .context { display: block; margin-top: 8px; font-family: var(--font); font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+.headline .context b { color: var(--ink-2); }
 .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
 .tile { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 12px; min-width: 0; }
 .tile .k { font-size: 11.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
@@ -338,6 +340,7 @@ table.stores { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .kind.official { background: var(--good-soft); color: var(--good); }
 .kind.major { background: color-mix(in srgb, var(--e-shopping) 14%, transparent); color: var(--e-shopping); }
 .kind.quick { background: color-mix(in srgb, var(--e-immersive) 15%, transparent); color: var(--e-immersive); }
+.kind.import { background: var(--fair-soft); color: var(--fair); }
 .flags { display: flex; gap: 5px; flex-wrap: wrap; min-width: 170px; }
 .flagchip { font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 6px; background: var(--neutral-soft); color: var(--muted); }
 .flagchip.warn { background: var(--fair-soft); color: var(--fair); }

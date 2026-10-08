@@ -19,13 +19,14 @@ from .config import ROOT, Settings, load_settings
 from .llm import LLM
 from .serp import SerpClient
 
-log = logging.getLogger("aslidaam")
+log = logging.getLogger("nijam")
 WEB = ROOT / "web"
 
 EXAMPLES = [
     {"label": "boAt Airdopes 141 Gen 2", "query": "https://www.amazon.in/dp/B0F8BVSK21",
      "hint": "Amazon link · 80% off claim"},
-    {"label": "Redmi 13 5G", "query": "Redmi 13 5G 8GB 128GB", "hint": "Phone · typed search"},
+    {"label": "Sony WH-1000XM5", "query": "Sony WH-1000XM5", "hint": "Real festive deal"},
+    {"label": "Redmi 13 5G", "query": "Redmi 13 5G 8GB 128GB", "hint": "Above market"},
     {"label": "Philips air fryer", "query": "Philips HD9252/70 air fryer", "hint": "Thin data · honest answer"},
 ]
 
@@ -58,7 +59,7 @@ def create_app(settings: Settings | None = None, deps: pipeline.Deps | None = No
         yield
         await app.state.deps.serp.aclose()
 
-    app = FastAPI(title="AsliDaam", lifespan=lifespan)
+    app = FastAPI(title="Nijam", lifespan=lifespan)
 
     @app.middleware("http")
     async def same_origin_api(request: Request, call_next):

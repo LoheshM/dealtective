@@ -18,8 +18,8 @@ MAJOR_RETAILERS = {
     "amazon": "Amazon", "flipkart": "Flipkart", "croma": "Croma", "reliance digital": "Reliance Digital",
     "reliancedigital": "Reliance Digital", "vijay sales": "Vijay Sales", "vijaysales": "Vijay Sales",
     "tata cliq": "Tata CLiQ", "tatacliq": "Tata CLiQ", "myntra": "Myntra", "ajio": "AJIO", "nykaa": "Nykaa",
-    "jiomart": "JioMart", "poorvika": "Poorvika", "sangeetha": "Sangeetha", "snapdeal": "Snapdeal",
-    "meesho": "Meesho", "paytm": "Paytm Mall", "shopclues": "ShopClues", "lenskart": "Lenskart",
+    "jiomart": "JioMart", "poorvika": "Poorvika", "sangeetha": "Sangeetha",
+    "paytm": "Paytm Mall", "lenskart": "Lenskart", "shopsy": "Shopsy (Flipkart)",
     "decathlon": "Decathlon", "firstcry": "FirstCry", "pepperfry": "Pepperfry", "ikea": "IKEA",
     "apple": "Apple", "samsung": "Samsung", "oneplus": "OnePlus", "mi.com": "Xiaomi", "dell": "Dell",
     "hp": "HP", "lenovo": "Lenovo", "unicorn": "Unicorn (Apple Premium Reseller)", "imagine": "Imagine",
@@ -27,6 +27,7 @@ MAJOR_RETAILERS = {
 }
 QUICK_COMMERCE = ("zepto", "blinkit", "instamart", "swiggy", "bigbasket", "minutes", "bbnow", "flipkart minutes")
 UNAVAILABLE = ("contact for", "out of stock", "unavailable", "not available")
+TRUSTED_KINDS = {"official", "major", "quick"}
 
 
 @dataclass
@@ -55,8 +56,17 @@ class Offer:
         }
 
 
+# Cross-border resellers list Indian-rupee prices for imported stock. They are shown, never used
+# for the Indian market price.
+IMPORT_STORES = ("desertcart", "ubuy", "wafuu", "anjitait", "shoptheworld", "mygsm", "fado", "joom",
+                 "aliexpress", "ebay", "zoodmall", "tradeling", "jomashop", "walmart", "bestbuy", "newegg")
+_FOREIGN_TLD_RE = re.compile(r"\.(?:com\.)?(?:ae|sa|jp|uk|us|me|de|sg|my|cn|hk|au|ca|fr|it|es|nl|tr)$")
+
+
 def classify_store(store: str, brand: str | None) -> str:
     s = (store or "").lower()
+    if any(k in s for k in IMPORT_STORES) or _FOREIGN_TLD_RE.search(s.strip()):
+        return "import"
     if brand:
         b = brand.lower().strip()
         # whole-word match: brand "Mi" must not make "Flipkart Minutes" official
@@ -77,7 +87,15 @@ def store_key(store: str) -> str:
     """'Myntra - MNow' and 'Myntra' are one retailer; 'amazon.in' and 'Amazon.in' too."""
     base = re.split(r"\s+[-–|]\s+", (store or "").lower().strip())[0]
     base = re.sub(r"\.(com|in|co\.in|net|store)$", "", base)
-    return re.sub(r"[^a-z0-9]", "", base)
+    key = re.sub(r"[^a-z0-9]", "", base)
+    # Retailers that list under several storefront names count once.
+    for alias, canonical in STORE_ALIASES.items():
+        if alias in key:
+            return canonical
+    return key
+
+
+STORE_ALIASES = {"shopsy": "flipkart", "flipkartminutes": "flipkart", "myntramnow": "myntra"}
 
 
 def is_unavailable(notes: list) -> bool:
@@ -105,10 +123,12 @@ class Market:
     min_price: float | None = None
     max_price: float | None = None
     google_range: tuple[float, float] | None = None
+    basis: str = "all"  # "major" when ≥3 in-stock official/major/quick-commerce stores set the reference
 
     def public(self) -> dict:
         return {
             "status": self.status, "store_count": self.store_count, "reference": _r(self.reference),
+            "basis": self.basis,
             "band_low": _r(self.band_low), "band_high": _r(self.band_high), "min_price": _r(self.min_price),
             "max_price": _r(self.max_price),
             "google_range": list(self.google_range) if self.google_range else None,
@@ -138,24 +158,34 @@ def compute_market(offers: list[Offer], google_range: tuple[float, float] | None
         if trimmed:
             m.min_price, m.max_price = trimmed[0], trimmed[-1]
         # Too thin for a verdict, but a price 2x away from everything else still deserves a flag.
-        if len(prices) >= 2:
-            base = statistics.median_low(prices)  # with 2 prices the mean-median sits between them
+        # With 2–3 prices the median can be a junk listing, so anchor the check on better evidence:
+        # Google's own price range, else the listing being judged, else the lower median.
+        anchor = next((o.price for o in offers if o.is_anchor), None)
+        base = (sum(google_range) / 2 if google_range else anchor) or (
+            statistics.median_low(prices) if len(prices) >= 2 else None)
+        if base:
             for o in offers:
                 if o.price < 0.5 * base:
                     o.flag = "low_outlier"
                 elif o.price > 2.0 * base:
                     o.flag = "high_outlier"
         return m
-    ref = statistics.median(trimmed)
+    # Prefer what established retailers charge: a long tail of small sellers listing at the old
+    # price would otherwise inflate the "market" and make an ordinary sale price look like a steal.
+    trusted = sorted(o.price for o in by_store.values()
+                     if o.kind in TRUSTED_KINDS and 0.5 * raw_median <= o.price <= 2.0 * raw_median)
+    basis_prices, basis = (trusted, "major") if len(trusted) >= MIN_STORES else (trimmed, "all")
+    ref = statistics.median(basis_prices)
     m = Market(
         "ok",
-        len(trimmed),
+        len(basis_prices),
         reference=ref,
-        band_low=percentile(trimmed, 0.25),
-        band_high=percentile(trimmed, 0.75),
+        band_low=percentile(basis_prices, 0.25),
+        band_high=percentile(basis_prices, 0.75),
         min_price=trimmed[0],
         max_price=trimmed[-1],
         google_range=google_range,
+        basis=basis,
     )
     for o in offers:
         if o.price < LOW_OUTLIER * ref:
@@ -178,6 +208,8 @@ class Verdict:
     best_trusted: dict | None
     cheapest_any: dict | None
     headline: str
+    same_price_at: list[str] = field(default_factory=list)  # trusted stores within 1% of the deal
+    cheaper_at: dict | None = None  # cheapest trusted store more than 2% below the deal
 
     def public(self) -> dict:
         return {
@@ -186,6 +218,9 @@ class Verdict:
             "real_saving_abs": _r(self.real_saving_abs), "mrp_multiple": _r(self.mrp_multiple, 1),
             "mrp_theatre": self.mrp_theatre, "best_trusted": self.best_trusted,
             "cheapest_any": self.cheapest_any, "headline": self.headline,
+            "same_price_at": self.same_price_at,
+            "cheaper_at": ({"store": self.cheaper_at["store"], "price": _r(self.cheaper_at["price"]),
+                            "link": self.cheaper_at.get("link")} if self.cheaper_at else None),
         }
 
 
@@ -232,8 +267,15 @@ def decide(market: Market, deal_price: float | None, mrp: float | None, offers: 
         head = f"Claimed {claimed:.0%} off → {saving}"
     else:
         head = saving[0].upper() + saving[1:]
+    # Context a shopper needs: is the same price available elsewhere, or is a trusted store cheaper?
+    others = [o for o in trusted if o.in_reference]  # not the listing's own marketplace
+    same_at = sorted({o.store for o in others if abs(o.price - deal_price) <= 0.01 * deal_price})[:3]
+    cheaper = [o for o in others if o.price < 0.98 * deal_price]
+    cheaper_at = min(cheaper, key=lambda o: o.price).public() if cheaper else None
+    if cheaper_at and label == "good_deal":
+        label = "fair_price"  # below the market median, but a trusted store is cheaper still
     return Verdict(label, deal_price, mrp, claimed, real, real_abs, mrp_multiple, theatre, best_trusted,
-                   cheapest_any, head)
+                   cheapest_any, head, same_at, cheaper_at)
 
 
 def _r(v: float | None, nd: int = 0) -> float | None:
