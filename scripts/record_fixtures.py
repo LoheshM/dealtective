@@ -46,6 +46,7 @@ async def main(queries: list[str]) -> None:
         if src.exists():
             shutil.copyfile(src, fx / "llm" / src.name)
             n += 1
+    (fx / "llm" / "MODEL").write_text(deps.llm.model, encoding="utf-8")  # replay keys LLM fixtures by this model
     print(f"wrote {n} fixture files to {fx}")
     await deps.serp.aclose()
 

@@ -716,7 +716,7 @@ async def narrate(llm: LLM, m: mk.Market, v: mk.Verdict, anchor: Anchor | None, 
              "source_ids": [i for i in _l(vb.get("source_ids")) if i in valid]}
             for vb in _l(data.get("voices")) if isinstance(vb, dict)
         ]
-        summary = str(data.get("summary") or "")
+        summary = re.sub(r'"(₹[0-9,]+)"', r"", str(data.get("summary") or ""))  # some models quote amounts
         # The summary may only restate computed numbers; anything else falls back to the template.
         if summary and numbers_grounded(summary, facts):
             return {"summary": summary, "voices": [x for x in voices if x["source_ids"]], "generated_by": "llm"}

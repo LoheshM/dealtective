@@ -12,7 +12,8 @@ log = logging.getLogger(__name__)
 
 
 class LLM:
-    def __init__(self, api_key: str | None, model: str, cache_dir: Path, fixtures_dir: Path | None, replay: bool):
+    def __init__(self, api_key: str | None, model: str, cache_dir: Path, fixtures_dir: Path | None, replay: bool,
+                 base_url: str | None = None):
         self.model = model
         self.replay = replay
         self.cache_dir = cache_dir / "llm"
@@ -23,14 +24,19 @@ class LLM:
         if api_key and not replay:
             from openai import AsyncOpenAI
 
-            self._client = AsyncOpenAI(api_key=api_key, timeout=40.0, max_retries=1)
+            self._client = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=40.0, max_retries=1)
+        # Recorded fixtures are keyed by the model they were recorded with; replay must use the same key
+        # whichever provider is configured now.
+        recorded = self.fixtures_dir / "MODEL" if self.fixtures_dir else None
+        self.key_model = (recorded.read_text(encoding="utf-8").strip()
+                          if replay and recorded is not None and recorded.exists() else model)
 
     @property
     def available(self) -> bool:
         return self._client is not None
 
     def _key(self, system: str, user: str, schema: dict) -> str:
-        blob = json.dumps([self.model, system, user, schema], sort_keys=True, ensure_ascii=False)
+        blob = json.dumps([getattr(self, "key_model", self.model), system, user, schema], sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
 
     def _lookup(self, key: str) -> dict | None:
@@ -50,7 +56,7 @@ class LLM:
             return None, "unavailable"
         try:
             kwargs: dict[str, Any] = {}
-            if self.model.startswith(("gpt-5", "o3", "o4")):
+            if self.model.startswith(("gpt-5", "o3", "o4", "gemini-2.5", "gemini-3")):
                 kwargs["reasoning_effort"] = "low"
             r = await self._client.chat.completions.create(
                 model=self.model,

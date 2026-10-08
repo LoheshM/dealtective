@@ -173,5 +173,5 @@ scripts/    record_fixtures.py · secret_scan.py
 ## 10. Submission checklist
 
 - Public repo `LoheshM/dealtective` with README: problem, demo GIF/screens, setup with `uv`, replay mode, SerpApi usage table, AI-tools disclosure, MIT licence.
-- Demo video under 3 minutes (the user records it). The script lives in the README's "Demo script" section.
+- Demo video under 3 minutes (the user records it from a local, git-ignored DEMO_SCRIPT.md).
 - Form fields: track = Commerce & Market Intelligence; prior project = no (new for this hackathon; design ideas informed by the author's prior work, no code reused); AI tools = Claude Code (Opus) for research, planning, coding and review, and OpenAI in the product.

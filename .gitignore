@@ -29,3 +29,6 @@ Thumbs.db
 
 # exploration scratch
 scratch_probe/
+
+# local notes for recording the demo video
+DEMO_SCRIPT.md

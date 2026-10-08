@@ -338,3 +338,27 @@ def test_anchor_from_offers_uses_the_stores_own_price():
 def test_d2c_stores_are_known():
     assert "boat-lifestyle.com" in parse.D2C_STORES
     assert parse.store_of("https://www.boat-lifestyle.com/products/airdopes-141") == ("boat-lifestyle.com", "boAt")
+
+
+def test_llm_provider_selection(monkeypatch):
+    from app import config
+    for k in ("LLM_PROVIDER", "LLM_MODEL", "OPENAI_MODEL", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "g-key")
+    s = config.load_settings()
+    assert (s.llm_provider, s.openai_model, s.openai_key) == ("gemini", "gemini-2.5-flash", "g-key")
+    assert s.llm_base_url and "generativelanguage" in s.llm_base_url
+    monkeypatch.setenv("OPENAI_API_KEY", "o-key")
+    s = config.load_settings()
+    assert (s.llm_provider, s.openai_model, s.llm_base_url) == ("openai", "gpt-5.4-mini", None)
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    assert config.load_settings().openai_key == "g-key"
+
+
+def test_replay_uses_recorded_fixture_model(tmp_path):
+    from app.llm import LLM
+    (tmp_path / "fx" / "llm").mkdir(parents=True)
+    (tmp_path / "fx" / "llm" / "MODEL").write_text("gpt-5.4-mini", encoding="utf-8")
+    replay = LLM(None, "gemini-2.5-flash", tmp_path / "c", tmp_path / "fx", replay=True)
+    live = LLM(None, "gpt-5.4-mini", tmp_path / "c", tmp_path / "fx", replay=False)
+    assert replay._key("s", "u", {}) == live._key("s", "u", {})

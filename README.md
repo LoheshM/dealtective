@@ -72,8 +72,10 @@ uv run uvicorn app.main:app --port 8000
 | Variable | Needed? | Notes |
 |---|---|---|
 | `SERPAPI_API_KEY` | For live checks | Free plan works (250 searches/month) |
-| `OPENAI_API_KEY` | Recommended | Same-product resolver and summary. Without it, rules-only matching and a template summary are used. |
-| `OPENAI_MODEL` | No | Default `gpt-5.4-mini` |
+| `GEMINI_API_KEY` | Recommended (free tier) | Same-product resolver and summary. Get a free key at [aistudio.google.com](https://aistudio.google.com/apikey). Without an LLM key, rules-only matching and a template summary are used. |
+| `OPENAI_API_KEY` | Alternative | Use OpenAI instead of Gemini |
+| `LLM_PROVIDER` | No | `gemini` or `openai`. Defaults to whichever key is set. |
+| `LLM_MODEL` | No | Defaults: `gemini-2.5-flash` / `gpt-5.4-mini` |
 | `DEALTECTIVE_MODE` | No | `auto` (cache first, then live), `live`, or `replay` |
 | `DEALTECTIVE_CREDITS_PER_CHECK` | No | Default 5 |
 | `DEALTECTIVE_LIVE_PER_HOUR` | No | Server-wide cap on billed searches per hour (default 40). Beyond it, cached results only. |
@@ -158,16 +160,6 @@ uv run pytest -q          # unit + replay end-to-end + API tests, no network
 uv run python -m scripts.ui_shot http://localhost:8000 docs/screenshots   # UI smoke via Playwright (Edge/Chrome)
 ```
 
-## Demo script (under 3 minutes)
-
-1. **0:00** Landing: "Is that 80% off real?"
-2. **0:10** Paste the Amazon.in link for *boAt Airdopes 141 Gen 2*. The live trail shows Amazon Product, Google Shopping and Immersive Product calls ticking by.
-3. **0:40** The verdict: **Claimed 80% off → real saving ₹0**. On the number line, the M.R.P. sits at 5.0× the market.
-4. **1:10** The store table: boAt.com, Zop and Myntra around the same price, Flipkart out of stock, a ₹3,890 listing flagged "well above market".
-5. **1:30** "How we matched": 40+ look-alikes excluded with reasons (ANC, Elite, Pro, cases).
-6. **1:50** Typed search *Sony WH-1000XM5*: a **Good deal** at ₹19,989, with "same price at Flipkart". Or *Redmi 13 5G 8GB 128GB*: the Amazon listing is ₹11,000 above a market of about ₹13k.
-7. **2:20** *Philips HD9252/70*: **Not enough data**, the honest answer. Then the Lens button and the WhatsApp share.
-
 ## Limitations
 
 - **Not a price-history tracker.** Dealtective cannot detect pre-sale price hikes. It compares against today's market.
@@ -177,7 +169,7 @@ uv run python -m scripts.ui_shot http://localhost:8000 docs/screenshots   # UI s
 ## AI tools disclosure
 
 - **Built with Claude Code (Anthropic, Claude Opus).** Used for pain-point research, idea debate (including an adversarial "judge" review), architecture, code, tests, UI and code review. All output was reviewed and directed by the author.
-- **Inside the product:** OpenAI `gpt-5.4-mini` for same-product resolution and the plain-language summary. All prices and percentages are computed in code.
+- **Inside the product:** Google Gemini `gemini-2.5-flash` (free tier) or OpenAI `gpt-5.4-mini`, used for same-product resolution and the plain-language summary. All prices and percentages are computed in code.
 
 ## Licence
 
