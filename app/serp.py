@@ -125,7 +125,7 @@ class SerpClient:
         fixtures_dir: Path | None = None,
         mode: str = "auto",
         ttl_hours: float = 24.0,
-        timeout: float = 45.0,
+        timeout: float = 90.0,  # Google web searches with site: can take >45 s
         transport: httpx.AsyncBaseTransport | None = None,
         live_per_hour: int = 0,
     ) -> None:

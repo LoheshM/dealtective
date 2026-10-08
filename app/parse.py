@@ -40,14 +40,19 @@ def classify(raw: str) -> Query:
 
 _FOREIGN_CCY_RE = re.compile(r"[$€£¥]|(?<![a-z])(usd|aed|eur|gbp|sar|cad|aud)(?![a-z])", re.IGNORECASE)
 
-# Store links Nijam can read through Google's index of the page (no dedicated SerpApi engine).
+# Store links Dealtective can read through Google's index of the page (no dedicated SerpApi engine).
 STORE_LABELS = {
     "flipkart.com": "Flipkart", "myntra.com": "Myntra", "ajio.com": "AJIO", "croma.com": "Croma",
     "reliancedigital.in": "Reliance Digital", "vijaysales.com": "Vijay Sales", "tatacliq.com": "Tata CLiQ",
     "nykaa.com": "Nykaa", "nykaafashion.com": "Nykaa Fashion", "jiomart.com": "JioMart", "meesho.com": "Meesho",
     "snapdeal.com": "Snapdeal", "boat-lifestyle.com": "boAt", "mi.com": "Mi.com", "samsung.com": "Samsung",
     "apple.com": "Apple", "decathlon.in": "Decathlon", "firstcry.com": "FirstCry", "pepperfry.com": "Pepperfry",
+    "gonoise.com": "Noise", "oneplus.in": "OnePlus", "nike.com": "Nike", "adidas.co.in": "adidas",
+    "asics.co.in": "ASICS", "puma.com": "PUMA", "lenskart.com": "Lenskart", "jbl.com": "JBL",
 }
+# Brand-owned stores: the store name is the product's brand, and URLs often omit it (/products/airdopes-141).
+D2C_STORES = {"boat-lifestyle.com", "mi.com", "samsung.com", "apple.com", "gonoise.com", "oneplus.in", "nike.com",
+              "adidas.co.in", "asics.co.in", "puma.com", "jbl.com"}
 
 
 def store_of(url: str) -> tuple[str, str]:
@@ -63,9 +68,15 @@ def store_of(url: str) -> tuple[str, str]:
 def listing_id(url: str) -> str | None:
     """Stable listing id in a store URL: Flipkart 'itm…', Myntra numeric id, etc."""
     path = unquote(urlparse(url if "://" in url else "https://" + url).path)
-    m = re.search(r"(itm[0-9a-z]{8,})", path, re.IGNORECASE)
+    m = re.search(r"(itm[0-9a-z]{8,})", path, re.IGNORECASE)  # Flipkart
     if m:
         return m.group(1).lower()
+    m = re.search(r"/p-(mp[0-9]{6,})", path, re.IGNORECASE)  # Tata CLiQ /p-mp000000017733211
+    if m:
+        return m.group(1).lower()
+    m = re.search(r"/p/([0-9]{5,})(?:_[a-z0-9]+)?(?:/|$)", path, re.IGNORECASE)  # AJIO, Croma, Nykaa, Reliance
+    if m:
+        return m.group(1)
     ids = [p for p in path.split("/") if re.fullmatch(r"[0-9a-z]{6,}", p, re.IGNORECASE) and re.search(r"[0-9]", p)]
     return ids[-1].lower() if ids else None
 
@@ -80,11 +91,14 @@ CATEGORY_WORDS = {
 
 def product_query(slug: str, max_words: int = 7) -> str:
     """'asics noosa tri 16 running shoes men' -> 'asics noosa tri 16' (keeps ≥2 words)."""
-    words = slug.split()
+    words = [w for i, w in enumerate(slug.split()) if i == 0 or w.lower() not in GENDER_WORDS]
     for i, w in enumerate(words):
         if i >= 2 and w.lower() in CATEGORY_WORDS:
             return " ".join(words[:i][:max_words])
     return " ".join(words[:max_words])
+
+
+GENDER_WORDS = {"men", "mens", "man", "women", "womens", "woman", "boys", "girls", "kids", "unisex"}
 
 
 _SNIPPET_PRICE_RE = re.compile(r"(\d{1,2})%\.?\s*(?:off\s*)?₹?\s?([\d,]{3,})\.?\s*₹\s?([\d,]{2,})")
@@ -99,12 +113,24 @@ def snippet_prices(result: dict) -> tuple[float | None, float | None]:
     snippet = str(result.get("snippet") or "")
     m = _SNIPPET_PRICE_RE.search(snippet)
     mrp = parse_inr(m.group(2)) if m else None
-    if rich.get("price") and rich.get("currency") in (None, "₹", "INR"):
-        price = parse_inr(rich.get("price"))
+    rupees = rich.get("currency") is None or "₹" in str(rich.get("currency")) or rich.get("currency") == "INR"
+    if rupees and (rich.get("price") or rich.get("price_from")):
+        price = parse_inr(rich.get("price") or rich.get("price_from"))
     elif m:
         price = parse_inr(m.group(3))
     else:
-        price = parse_inr(re.search(r"₹\s?[\d,]+(?:\.\d+)?", snippet).group(0)) if "₹" in snippet else None
+        first = re.search(r"(?:₹|Rs\.?|INR)\s?[\d,]+(?:\.\d+)?", snippet, re.IGNORECASE)
+        price = parse_inr(first.group(0)) if first else None
+        if price and mrp is None:
+            # "₹2,099 ₹3,999 (47% OFF)" / "Rs. 2099 MRP Rs. 3999" style: a higher second price is the M.R.P.
+            rest = re.findall(r"(?:₹|Rs\.?|MRP:?\s?₹?)\s?([\d,]+(?:\.\d+)?)", snippet[first.end():first.end() + 80], re.IGNORECASE)
+            higher = [parse_inr(x) for x in rest if parse_inr(x) and parse_inr(x) > price]
+            if higher and ("%" in snippet or "mrp" in snippet.lower()):
+                mrp = higher[0]
+    if not price:
+        # AJIO-style text: "Buy NIKE Court Royale 2 … at 3995 at Ajio.com"
+        m2 = re.search(r"(?:at|for)\s+(?:Rs\.?\s?|₹\s?)?([0-9][0-9,]{2,})\s+(?:at|on|from)\s", snippet, re.IGNORECASE)
+        price = parse_inr(m2.group(1)) if m2 else None
     if mrp and price and mrp <= price:
         mrp = None
     return price, mrp

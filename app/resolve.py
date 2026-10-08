@@ -107,7 +107,6 @@ _USED_STORE_SUBSTR = ("cashify", "gameloot", "ovantica", "budli", "controlz", "y
 def deterministic(anchor_title: str, brand: str | None, cand: Candidate) -> tuple[str, str]:
     title = cand.title or ""
     toks = set(parse.tokens(title))
-    a_toks = set(parse.tokens(anchor_title))
     store_l = (cand.store or "").lower()
     store_toks = set(parse.tokens(store_l))
     notes = " ".join(str(n) for n in (cand.extra.get("notes") or []) if n)

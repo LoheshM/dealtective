@@ -19,7 +19,7 @@ from .config import ROOT, Settings, load_settings
 from .llm import LLM
 from .serp import SerpClient
 
-log = logging.getLogger("nijam")
+log = logging.getLogger("dealtective")
 WEB = ROOT / "web"
 
 EXAMPLES = [
@@ -60,7 +60,7 @@ def create_app(settings: Settings | None = None, deps: pipeline.Deps | None = No
         yield
         await app.state.deps.serp.aclose()
 
-    app = FastAPI(title="Nijam", lifespan=lifespan)
+    app = FastAPI(title="Dealtective", lifespan=lifespan)
 
     @app.middleware("http")
     async def same_origin_api(request: Request, call_next):

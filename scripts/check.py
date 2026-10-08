@@ -1,4 +1,4 @@
-"""Run one Nijam check from the terminal and print the event stream.
+"""Run one Dealtective check from the terminal and print the event stream.
 
     uv run python -m scripts.check "https://www.amazon.in/dp/B0F8BVSK21"
 """

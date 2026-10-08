@@ -1,10 +1,10 @@
-# Nijam: நிஜ விலை, *the real price*
+# Dealtective: the deal detective
 
-**Is that festive "80% off" real?** Paste an Amazon.in link or type a product. Nijam finds the **same exact product** across Indian stores using live SerpApi data. It works out what the market actually charges and shows your **real saving** next to the claimed one. Every price links to its source.
+**Is that festive "80% off" real?** Paste an Amazon.in link or type a product. Dealtective finds the **same exact product** across Indian stores using live SerpApi data. It works out what the market actually charges and shows your **real saving** next to the claimed one. Every price links to its source.
 
 > SerpApi India Hackathon 2026 · Track: **Commerce & Market Intelligence**
 
-![Nijam result for boAt Airdopes 141 Gen 2](docs/screenshots/desktop-light.png)
+![Dealtective result for boAt Airdopes 141 Gen 2](docs/screenshots/desktop-light.png)
 
 ## The problem
 
@@ -20,7 +20,7 @@ During Big Billion Days and the Great Indian Festival, almost every listing show
 
 **A live example (8 Oct 2026, from the app):**
 - Amazon.in sells *boAt Airdopes 141 Gen 2* at **₹799**, showing "−80%" against an **M.R.P. of ₹3,990**, under a *Great Indian Festival* badge.
-- Nijam found the same product at boAt.com, Zop and Myntra. The market price is **₹799**.
+- Dealtective found the same product at boAt.com, Zop and Myntra. The market price is **₹799**.
 - **Real saving: ₹0.** The M.R.P. is **5.0×** what any store charges.
 
 ## What it does
@@ -62,7 +62,7 @@ SerpApi is the product's only data source. Without it there are no prices, store
 Requires [uv](https://docs.astral.sh/uv/). Python 3.12 is fetched automatically.
 
 ```bash
-git clone https://github.com/LoheshM/nijam.git && cd nijam
+git clone https://github.com/LoheshM/dealtective.git && cd dealtective
 uv sync
 cp .env.example .env        # add your keys (optional, see below)
 uv run uvicorn app.main:app --port 8000
@@ -74,9 +74,9 @@ uv run uvicorn app.main:app --port 8000
 | `SERPAPI_API_KEY` | For live checks | Free plan works (250 searches/month) |
 | `OPENAI_API_KEY` | Recommended | Same-product resolver and summary. Without it, rules-only matching and a template summary are used. |
 | `OPENAI_MODEL` | No | Default `gpt-5.4-mini` |
-| `NIJAM_MODE` | No | `auto` (cache first, then live), `live`, or `replay` |
-| `NIJAM_CREDITS_PER_CHECK` | No | Default 5 |
-| `NIJAM_LIVE_PER_HOUR` | No | Server-wide cap on billed searches per hour (default 40). Beyond it, cached results only. |
+| `DEALTECTIVE_MODE` | No | `auto` (cache first, then live), `live`, or `replay` |
+| `DEALTECTIVE_CREDITS_PER_CHECK` | No | Default 5 |
+| `DEALTECTIVE_LIVE_PER_HOUR` | No | Server-wide cap on billed searches per hour (default 40). Beyond it, cached results only. |
 
 **No keys? It still runs.**
 - With no `SERPAPI_API_KEY`, the app switches to **replay mode**.
@@ -102,18 +102,42 @@ FastAPI ─ pipeline.run()  ──streams events──►  step · serp_call · 
 - **Find the exact variant before opening a product page.** An early probe compared Gen 2 against the original 141 by mistake.
 - **SerpApi's `extracted_old_price` parses `"80% off₹3,990"` as `80`.** We parse the raw `old_price` string ourselves, with a test for it.
 - **Prices from a seller's own marketplace never count toward that listing's reference.**
-- **Neutral language.** The M.R.P. is set by the brand under Legal Metrology rules, so Nijam states numbers and never accuses sellers.
+- **Neutral language.** The M.R.P. is set by the brand under Legal Metrology rules, so Dealtective states numbers and never accuses sellers.
+
+## Store coverage (tested with real links, 8 Oct 2026)
+
+SerpApi has engines for Amazon and Google, not for every Indian store. For other stores, Dealtective reads the listing's price through Google:
+1. **Google's index of that exact page** (`site:` search, matched by URL or listing id).
+2. Otherwise, **the store's own Google Shopping entry**.
+
+A near-match listing counts only when Google gives a structured price for it.
+
+We tested one real product link from each store against prices checked by hand:
+
+| Store | Listing price read? | Tested product: Dealtective vs actual |
+|---|---|---|
+| Amazon.in | ✅ Amazon Product API | Airdopes 141 Gen 2 ₹799 / M.R.P. ₹3,990 ✓ |
+| Flipkart | ✅ Google index / Shopping | ASICS Noosa Tri 16 ₹5,899 (index; live ₹5,039) · Sony WH-1000XM5 ₹20,499 (live ₹19,990) |
+| Reliance Digital | ✅ exact page | Sony WH-1000XM5 **₹31,990 ✓** → "above market", cheaper at Croma |
+| Tata CLiQ | ✅ via Shopping | JBL Tune 770NC **₹6,299 ✓** |
+| Nykaa | ✅ via Shopping | Maybelline Fit Me **₹509 ✓** |
+| boAt.com (brand store) | ✅ via Shopping | Airdopes 141 **₹799 ✓**; bigbasket ₹669 is cheaper |
+| Croma, Myntra, AJIO, Vijay Sales, JioMart, Meesho, Snapdeal | ⚠️ market only | Google returned no readable product page for these links (other sites, category pages, or not indexed). Dealtective says it couldn't read the listing and still shows the market. Example: JBL Tune 770NC ≈ ₹4,799, which matches Amazon and Flipkart. |
+
+**Rules for prices Dealtective can't read itself:**
+- A price read from Google's index is labelled *"the live price may differ"*.
+- Overseas resellers, B2B directories, price-tracker sites and refurbished-only sellers are shown but never counted in the market price.
 
 ## Verified against the web
 
 **How we checked:**
-- We ran 7 real products through Nijam on 8–9 Oct 2026, during the Great Indian Festival and Big Billion Days sales.
+- We ran 7 real products through Dealtective on 8–9 Oct 2026, during the Great Indian Festival and Big Billion Days sales.
 - Independent agents checked every number against price trackers and retailer pages: pricehistoryapp, pricebefore, price-history.in, Smartprix and brand stores.
 - The first round found real bugs: an accessory picked as the product, overseas resellers in the market price, and a wrong fallback model. All are fixed and covered by regression tests.
 
 Final results:
 
-| Product | Nijam says | Web evidence | |
+| Product | Dealtective says | Web evidence | |
 |---|---|---|---|
 | boAt Airdopes 141 Gen 2 (Amazon link) | ₹799, claims 80% off ₹3,990 → **fair price, real saving ₹0**, M.R.P. 5× market; same price at boAt.com | Flipkart ₹799 / M.R.P. ₹3,990 (price-history.in, 8 Oct); boAt store ₹799 | ✅ |
 | Sony WH-1000XM5 | Amazon ₹19,989 → **good deal**, 19% below market; same price at Flipkart | Amazon ₹19,989, Flipkart ₹19,990, Croma ₹22,990; ₹19,989 is the all-time low (pricehistoryapp, 8 Oct) | ✅ |
@@ -124,7 +148,7 @@ Final results:
 | OnePlus Nord CE4 Lite 8/128 | **Not enough data**: Amazon search returns only cases and screen guards; Shopping returns other models and refurbished units | Phone sold at Croma ₹17,999 / Flipkart ~₹16.6k; Amazon listing stale | ✅ honest |
 
 **What "honest" means here:**
-- When Google Shopping India doesn't carry the major retailers for a product, Nijam says so rather than inventing a market price.
+- When Google Shopping India doesn't carry the major retailers for a product, Dealtective says so rather than inventing a market price.
 - That is a limit of the search results, not a guess.
 
 ## Tests
@@ -146,7 +170,7 @@ uv run python -m scripts.ui_shot http://localhost:8000 docs/screenshots   # UI s
 
 ## Limitations
 
-- **Not a price-history tracker.** Nijam cannot detect pre-sale price hikes. It compares against today's market.
+- **Not a price-history tracker.** Dealtective cannot detect pre-sale price hikes. It compares against today's market.
 - **Location-dependent prices.** Google Shopping and quick-commerce prices can depend on location.
 - **Bank offers** are shown as listed. Eligibility isn't verified, so they aren't subtracted.
 
@@ -157,4 +181,4 @@ uv run python -m scripts.ui_shot http://localhost:8000 docs/screenshots   # UI s
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE). Product names and prices belong to their respective owners. Nijam displays public search results for comparison.
+MIT. See [LICENSE](LICENSE). Product names and prices belong to their respective owners. Dealtective displays public search results for comparison.

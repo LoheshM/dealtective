@@ -138,3 +138,5 @@ Headline: **"Claimed 80% OFF → your real saving today: ₹40 (5%)."**
 ## Round 11 — name
 
 The working name "AsliDaam" (Hindi) was replaced with **Nijam** (நிஜம், Tamil for "real/truth"), tagline **நிஜ விலை · the real price**. No existing Indian price tool by that name was found.
+
+Later renamed again to **Dealtective** ("the deal detective"). It is a catchier English play on words that any judge gets instantly, it says what the product does, and no existing app by that name was found.

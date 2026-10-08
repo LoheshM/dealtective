@@ -279,3 +279,62 @@ def test_listing_image_prefers_exact_listing_from_inline_images():
     assert pipeline.listing_image(d, "itmc9ccf049a204d", "flipkart.com").endswith("mine.jpg")
     assert pipeline.listing_image(d, "itmzzzz", "flipkart.com").endswith("other.jpg")
     assert pipeline.listing_image({"inline_images": [{"original": "http://insecure"}]}, None, "x.com") is None
+
+
+# --- store links beyond Flipkart (verified with 12 real URLs, Oct 2026) ------------------------
+
+@pytest.mark.parametrize(("url", "store", "lid"), [
+    ("https://www.ajio.com/nike-court-royale-2-nn-lace-up-sneakers/p/469098285_white", "AJIO", "469098285"),
+    ("https://www.tatacliq.com/jbl-tune-770nc-blue/p-mp000000021644678", "Tata CLiQ", "mp000000021644678"),
+    ("https://www.croma.com/jbl-tune-770nc-blue-/p/273407", "Croma", "273407"),
+    ("https://www.myntra.com/watches/casio/casio-vintage-a158wa/251023/buy", "Myntra", "251023"),
+    ("https://www.nykaa.com/maybelline-fit-me/p/31074", "Nykaa", "31074"),
+    ("https://www.vijaysales.com/p/P206834/206834/sony-wh-1000xm5-black", "Vijay Sales", "206834"),
+])
+def test_store_listing_ids(url, store, lid):
+    assert parse.store_of(url)[1] == store
+    assert parse.listing_id(url) == lid
+
+
+def test_url_key_ignores_language_prefix_and_query():
+    assert pipeline._url_key("https://www.flipkart.com/hi/x/p/itm1?pid=2") == pipeline._url_key("https://flipkart.com/x/p/itm1/")
+
+
+def test_store_anchor_ignores_other_domains_and_category_pages():
+    url = "https://www.croma.com/jbl-tune-770nc-blue-/p/273407"
+    d = {"organic_results": [
+        {"link": "https://www.reliancedigital.in/product/jbl-tune-770nc", "title": "JBL Tune 770NC",
+         "rich_snippet": {"top": {"detected_extensions": {"price": 5999.0, "currency": "₹"}}}},
+        {"link": "https://www.croma.com/c/headphones/1234", "title": "JBL Tune 770NC Blue", "snippet": "₹5,999"},
+    ]}
+    assert pipeline.anchor_from_store_results(d, url, parse.slug_text(url), "croma.com", "Croma") is None
+    d["organic_results"].append({"link": "https://www.croma.com/jbl-tune-770nc-blue-/p/273407", "title": "JBL Tune 770NC",
+                                 "rich_snippet": {"top": {"detected_extensions": {"price": 5999.0, "currency": "₹₹"}}}})
+    a = pipeline.anchor_from_store_results(d, url, parse.slug_text(url), "croma.com", "Croma")
+    assert a.price == 5999 and "closest" not in a.price_note
+
+
+def test_store_anchor_rejects_near_miss_missing_a_code():
+    url = "https://www.ajio.com/nike-court-royale-2-nn-lace-up-sneakers/p/469098285_white"
+    d = {"organic_results": [{"link": "https://www.ajio.com/nike-court-royale-2-lace-up-sneakers/p/469175820_brown",
+                              "title": "Buy NIKE Court Royale 2 Lace-Up Sneakers Online",
+                              "snippet": "Buy NIKE Court Royale 2 Lace-Up Sneakers at 3995 at Ajio.com."}]}
+    assert pipeline.anchor_from_store_results(d, url, parse.slug_text(url), "ajio.com", "AJIO") is None
+
+
+def test_snippet_formats_from_more_stores():
+    assert parse.snippet_prices({"snippet": "Buy NIKE Court Royale 2 Lace-Up Sneakers at 3995 at Ajio.com."}) == (3995, None)
+    assert parse.snippet_prices({"rich_snippet": {"top": {"detected_extensions": {"price_from": 4798.0, "price_to": 5499.0,
+                                                                                    "currency": "₹"}}}})[0] == 4798
+
+
+def test_anchor_from_offers_uses_the_stores_own_price():
+    offers = [_offer("tatacliq.com", 6299), _offer("Amazon.in", 4799)]
+    a = pipeline.anchor_from_offers(offers, "https://www.tatacliq.com/x/p-mp1", "Tata CLiQ", "tatacliq.com")
+    assert a.price == 6299 and a.store == "Tata CLiQ" and "Shopping listing" in a.price_note
+    assert pipeline.anchor_from_offers([_offer("Amazon.in", 4799)], "u", "Croma", "croma.com") is None
+
+
+def test_d2c_stores_are_known():
+    assert "boat-lifestyle.com" in parse.D2C_STORES
+    assert parse.store_of("https://www.boat-lifestyle.com/products/airdopes-141") == ("boat-lifestyle.com", "boAt")

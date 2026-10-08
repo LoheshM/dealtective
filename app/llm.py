@@ -89,7 +89,7 @@ NARRATE_SCHEMA = {
 }
 
 NARRATE_SYSTEM = (
-    "You write for Nijam, a neutral Indian shopping verifier. You get computed price FACTS (already "
+    "You write for Dealtective, a neutral Indian shopping verifier. You get computed price FACTS (already "
     "correct — copy numbers exactly, never compute new ones) and numbered SOURCES (user reviews, forum "
     "threads, video titles, store review summary). Output:\n"
     "1) summary: 2 short sentences, plain English, using the pre-formatted rupee strings exactly as given. "

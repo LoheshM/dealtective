@@ -1,4 +1,4 @@
-// Nijam front end — no build step. Streams pipeline events over SSE and renders them.
+// Dealtective front end — no build step. Streams pipeline events over SSE and renders them.
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const inr = (n) => (n == null || isNaN(n) ? "—" : "₹" + Math.round(n).toLocaleString("en-IN"));
@@ -35,13 +35,13 @@ function reset() {
 /* ---------- theme ---------- */
 (function initTheme() {
   let saved = null;
-  try { saved = localStorage.getItem("nijam-theme"); } catch { /* storage may be blocked */ }
+  try { saved = localStorage.getItem("dealtective-theme"); } catch { /* storage may be blocked */ }
   if (saved) document.documentElement.dataset.theme = saved;
   $("#theme-toggle").addEventListener("click", () => {
     const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     const next = cur === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("nijam-theme", next); } catch { /* ignore */ }
+    try { localStorage.setItem("dealtective-theme", next); } catch { /* ignore */ }
     if (state?.market) renderNumberLine();
   });
 })();
@@ -559,7 +559,7 @@ function shortTitle(t) { return (t || "").split(/[,|(]/)[0].trim().slice(0, 70);
 function shareText() {
   const v = state.verdict, m = state.market;
   const t = shortTitle(state.anchor?.title || state.product?.title || state.query);
-  const lines = [`Nijam check: ${t}`];
+  const lines = [`Dealtective check: ${t}`];
   if (v.deal_price) lines.push(`${state.anchor?.store || "Amazon.in"}: ${inr(v.deal_price)}${v.claimed_discount ? ` (claims ${pct(v.claimed_discount)} off M.R.P. ${inr(v.mrp)})` : ""}`);
   if (m.status === "ok") lines.push(`Market price across ${m.store_count} Indian stores: ${inr(m.reference)}`);
   if (v.real_saving != null) lines.push(v.real_saving_abs >= 0 ? `Real saving vs market: ${inr(v.real_saving_abs)}` : `That's ${inr(-v.real_saving_abs)} above market`);

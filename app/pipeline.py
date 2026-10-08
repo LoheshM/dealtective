@@ -1,4 +1,4 @@
-"""The Nijam verification pipeline.
+"""The Dealtective verification pipeline.
 
 query -> Amazon.in anchor listing -> Google Shopping candidates -> same-product resolution
       -> Google Immersive Product stores -> resolution -> market math -> narrative
@@ -14,6 +14,7 @@ import statistics
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -116,6 +117,13 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
     except ValueError as e:
         await emit("error", {"text": str(e)})
         return {"ok": False}
+    d2c_brand = None
+    if q.kind == "url_slug":
+        dom, lab = parse.store_of(raw_query)
+        if dom in parse.D2C_STORES:
+            d2c_brand = lab
+            if lab.lower() not in q.value.lower():
+                q = parse.Query("url_slug", f"{lab} {q.value}", q.raw)  # "boAt airdopes 141"
     await step("parse", "done", {
         "amazon_asin": f"Amazon.in product {q.value}",
         "url_slug": f"Store link → “{q.value}”",
@@ -133,7 +141,7 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
             anchor = anchor_from_product(d, q.value)
     elif q.kind == "url_slug":
         # No SerpApi engine for Flipkart/Myntra/Croma…: read the page's price from Google's index of it.
-        d = await serp("google", {"q": f"site:{store_domain} {q.value}", **GSHOP},
+        d = await serp("google", {"q": f"site:{store_domain} {parse.product_query(q.value, max_words=5)}", **GSHOP},
                        f"Read the {store_label} listing from Google's index (price & M.R.P.)")
         if d:
             anchor = anchor_from_store_results(d, raw_query, q.value, store_domain, store_label)
@@ -150,6 +158,8 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
     # 2 — candidate product cards on Google Shopping --------------------------------------
     base_title = anchor.title if anchor else q.value
     brand = anchor.brand if anchor else None
+    if d2c_brand:
+        brand = d2c_brand
     if not brand and q.kind != "amazon_asin":
         brand = parse.guess_brand(q.value, anchor.title if anchor else None)
     # URL input: derive the query from the listing. Typed input: search what the user asked for.
@@ -210,6 +220,17 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
     # 4 — market math (code, not LLM) -----------------------------------------------------
     offers = build_offers(anchor, same_cards, stores, brand)
 
+    # Store links: if the page itself wasn't readable (or only a near-match listing was), the
+    # store's own entry in Google Shopping is the better source for its price.
+    if q.kind == "url_slug" and (anchor is None or "closest" in (anchor.price_note or "")):
+        own = anchor_from_offers(offers, raw_query, store_label, store_domain)
+        if own:
+            own.image = own.image or (anchor.image if anchor else None)
+            anchor = own
+            await emit("anchor", anchor.public())
+            await step("anchor", "done", f"{store_label} price found in its Google Shopping listing")
+            offers = build_offers(anchor, same_cards, stores, brand)
+
     # Google Shopping India is thin for some categories (fashion, footwear). Brand stores and
     # retailers often show their price in ordinary Google results, so widen once if needed.
     usable = [o for o in offers if o.available and o.in_reference and not o.is_anchor]
@@ -222,6 +243,11 @@ async def run(raw_query: str, deps: Deps, emit: Emit) -> dict[str, Any]:
         await resolve_with_llm(base_title, web)
         await emit("match", {"stage": "web", "anchor_title": base_title, "candidates": [c.public() for c in web]})
         offers = build_offers(anchor, same_cards, stores + web, brand)
+        if anchor is None and q.kind == "url_slug":
+            anchor = anchor_from_offers(offers, raw_query, store_label, store_domain)
+            if anchor:
+                await emit("anchor", anchor.public())
+                offers = build_offers(anchor, same_cards, stores + web, brand)
         n_web = sum(1 for c in web if c.label == "same")
         await step("web", "done" if n_web else "warn", f"{n_web} more store price{'s' if n_web != 1 else ''} from Google results")
     google_range = parse_range(im_pr.get("price_range"))
@@ -363,31 +389,84 @@ def cards_from_shopping(g: dict, start_id: int = 0) -> list[resolve.Candidate]:
     return out
 
 
+_NON_PRODUCT_PATH_RE = re.compile(r"/(c|sale|sales|blog|blog-listing|collections?|search|brand|brands|offers?|deals?|category|"
+                                  r"lookalike|compare|reviews?)/", re.IGNORECASE)
+
+
+def _url_key(u: str) -> str:
+    """Comparable path for a store URL: lowercase, no query, no language prefix (/hi/), no trailing slash."""
+    p = urlparse(u if "://" in u else "https://" + u)
+    path = re.sub(r"^/(hi|ta|te|kn|ml|mr|bn|gu)/", "/", p.path.lower()).rstrip("/-")
+    return re.sub(r"^(www|m|dl)\.", "", (p.hostname or "").lower()) + path
+
+
+def _title_match(slug: str, title: str) -> float:
+    """Overlap in both directions: short store titles ('Sony WH-1000XM5') vs long URL slugs."""
+    a, b = parse.core_tokens(slug), parse.core_tokens(title)
+    if not a or not b:
+        return 0.0
+    return max(len(a & b) / len(a), len(a & b) / len(b))
+
+
+def _missing_codes(slug: str, title: str) -> set[str]:
+    """Short codes / numbers from the product name that a candidate title leaves out ('NN', '2', 'XM5').
+
+    Only the product-name part of the slug counts (before category words like 'running shoes').
+    """
+    name = set(parse.tokens(parse.product_query(slug)))
+    have = set(parse.tokens(title))
+    return {t for t in name - have if len(t) <= 3 or any(c.isdigit() for c in t)} - parse.COLOUR_WORDS
+
+
 def anchor_from_store_results(d: dict, url: str, slug: str, domain: str, label: str) -> Anchor | None:
     """The listing a user pasted (Flipkart, Myntra…), read from Google's index of that store.
 
-    Prefers the result for the exact same listing id; otherwise the best-matching product page.
+    Google sometimes ignores `site:` and returns other websites, so results are filtered to the
+    store's own product pages. Preference: same URL path, then same listing id, then the closest
+    product page on that store.
     """
     lid = parse.listing_id(url)
-    results = [r for r in _l(d.get("organic_results")) if isinstance(r, dict) and _s(r.get("link"))]
-    exact = [r for r in results if lid and lid in r["link"].lower()]
-    pool = exact or [r for r in results if _overlap(slug, r.get("title") or "") >= 0.6]
-    for r in pool:
+    want = _url_key(url)
+    results = [r for r in _l(d.get("organic_results"))
+               if isinstance(r, dict) and _s(r.get("link")) and parse.store_of(r["link"])[0] == domain]
+    exact = [r for r in results if _url_key(r["link"]) == want or (lid and lid in r["link"].lower())]
+    similar = [r for r in results if r not in exact and not _NON_PRODUCT_PATH_RE.search(urlparse(r["link"]).path)
+               and _title_match(slug, r.get("title") or "") >= 0.6
+               and not (parse.variant_markers(r.get("title") or "") - parse.variant_markers(slug))
+               and not _missing_codes(slug, r.get("title") or "")]
+    for r in exact + similar:
         price, mrp = parse.snippet_prices(r)
-        if not price:
+        rich = _d(_d(r.get("rich_snippet")).get("top")).get("detected_extensions") or {}
+        is_exact = r in exact
+        # A sibling listing's description text ("Buy … for Rs.34990 Online") is often the stale M.R.P.;
+        # only trust a near match when Google gives a structured price for it.
+        if not price or (not is_exact and not (rich.get("price") or rich.get("price_from"))):
             continue
         snippet = str(r.get("snippet") or "")
         offer = re.search(r"Buy at ₹\s?([\d,]+)", snippet)
-        rich = _d(_d(r.get("rich_snippet")).get("top")).get("detected_extensions") or {}
         return Anchor(
             source=domain.split(".")[0], store=label, title=_s(r.get("title")) or slug, brand=None,
             price=price, mrp=mrp, link=url, image=_s(r.get("thumbnail")) or listing_image(d, lid, domain),
             rating=_num(rich.get("rating")), reviews=_num(rich.get("reviews")),
             offer_price=parse.parse_inr(offer.group(1)) if offer else None,
             price_note=("Price from Google's index of this page — the live price may differ"
-                        + ("" if exact and r is exact[0] else " · nearest matching listing")),
+                        + ("" if is_exact else " · closest matching listing on this store")),
         )
     return None
+
+
+def anchor_from_offers(offers: list[mk.Offer], url: str, store_label: str, domain: str) -> Anchor | None:
+    """Fallback for store links: the store's own price as it appears in Google Shopping / product data."""
+    key = mk.store_key(store_label)
+    mine = [o for o in offers if not o.is_anchor and (key and key in mk.store_key(o.store)
+                                                       or domain.split(".")[0] in (o.link or "").lower())]
+    mine = [o for o in mine if o.available] or mine
+    if not mine:
+        return None
+    o = min(mine, key=lambda x: x.price)
+    return Anchor(source=domain.split(".")[0], store=store_label, title=o.title, brand=None, price=o.price,
+                  mrp=None, link=url, image=None, rating=o.rating, reviews=o.reviews,
+                  price_note=f"Price from {store_label}'s Google Shopping listing — the live price may differ")
 
 
 def listing_image(d: dict, lid: str | None, domain: str) -> str | None:
@@ -426,7 +505,7 @@ def candidates_from_web(d: dict, start_id: int) -> list[resolve.Candidate]:
         price, _mrp = parse.snippet_prices(r)
         if not price:
             continue
-        domain, label = parse.store_of(r["link"])
+        _domain, label = parse.store_of(r["link"])
         out.append(resolve.Candidate(
             id=start_id + i, title=parse.fix_mojibake(_s(r.get("title")) or ""), store=_s(r.get("source")) or label,
             price=price, link=r["link"], origin="google",

@@ -1,6 +1,6 @@
-# Nijam — product & implementation plan
+# Dealtective — product & implementation plan
 
-> **Nijam (நிஜம், Tamil for "real"): the real price.** Paste an Amazon.in link or a product name during the festive sale. In about 10 seconds Nijam tells you:
+> **Dealtective, the deal detective.** Paste an Amazon.in link or a product name during the festive sale. In about 10 seconds Dealtective tells you:
 > - what the market actually charges for the *exact same product* across Indian stores;
 > - your real saving vs the claimed discount;
 > - how far the MRP sits above any real price;
@@ -83,7 +83,7 @@ FastAPI (app/main.py)
 - The free Account API drives the credits pill.
 
 **Replay mode:**
-- `NIJAM_MODE=replay` serves recorded SerpApi and LLM responses from `data/fixtures/`.
+- `DEALTECTIVE_MODE=replay` serves recorded SerpApi and LLM responses from `data/fixtures/`.
 - Judges can run the three demo products with **no keys at all**.
 - Fixtures are scrubbed of `api_key`.
 
@@ -172,6 +172,6 @@ scripts/    record_fixtures.py · secret_scan.py
 
 ## 10. Submission checklist
 
-- Public repo `LoheshM/nijam` with README: problem, demo GIF/screens, setup with `uv`, replay mode, SerpApi usage table, AI-tools disclosure, MIT licence.
+- Public repo `LoheshM/dealtective` with README: problem, demo GIF/screens, setup with `uv`, replay mode, SerpApi usage table, AI-tools disclosure, MIT licence.
 - Demo video under 3 minutes (the user records it). The script lives in the README's "Demo script" section.
 - Form fields: track = Commerce & Market Intelligence; prior project = no (new for this hackathon; design ideas informed by the author's prior work, no code reused); AI tools = Claude Code (Opus) for research, planning, coding and review, and OpenAI in the product.
