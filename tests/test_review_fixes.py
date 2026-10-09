@@ -362,3 +362,36 @@ def test_replay_uses_recorded_fixture_model(tmp_path):
     replay = LLM(None, "gemini-2.5-flash", tmp_path / "c", tmp_path / "fx", replay=True)
     live = LLM(None, "gpt-5.4-mini", tmp_path / "c", tmp_path / "fx", replay=False)
     assert replay._key("s", "u", {}) == live._key("s", "u", {})
+
+
+# --- found while stress-testing demo examples (9 Oct 2026) -------------------------------------
+
+def test_multipack_listing_is_never_the_anchor():
+    """Amazon search for 'Fire-Boltt Ninja Call Pro Plus' put a 2-watch 'Combo' (₹2,198 / M.R.P. ₹39,998) first."""
+    d = {"organic_results": [
+        {"title": "Combo Ninja Call Pro Plus Smart Watch 1.83 inch with Bluetooth Calling (Black) Ninja Call Pro Plus "
+                  "Smart Watch 1.83 inch with Bluetooth Calling (Grey)", "price": "₹2,198", "old_price": "₹39,998"},
+        {"title": "Ninja Call Pro Plus Bluetooth Calling Smart Watch, 1.83\" Display, AI Voice Assistant",
+         "price": "₹999", "old_price": "₹18,999"},
+    ]}
+    a = pipeline.anchor_from_search(d, "Fire-Boltt Ninja Call Pro Plus")
+    assert a is not None and a.price == 999 and "Combo" not in a.title
+    # …unless the user asked for the pack
+    a2 = pipeline.anchor_from_search(d, "Fire-Boltt Ninja Call Pro Plus combo")
+    assert a2 is not None
+
+
+async def test_llm_summary_control_characters_are_removed(tmp_path, monkeypatch):
+    """Gemini once emitted a backspace before each ₹; quoted amounts must keep their digits."""
+    from app.llm import LLM
+    llm = LLM(None, "m", tmp_path, None, replay=True)
+    m = mk.Market("ok", 3, reference=1099)
+    v = mk.decide(m, 999, 18999, [])
+
+    async def fake_json(system, user, schema, name):
+        return {"summary": 'The price is "₹999" against an M.R.P. of \b₹18,999.', "voices": []}, "live"
+
+    monkeypatch.setattr(llm, "json", fake_json)
+    out = await pipeline.narrate(llm, m, v, None, [])
+    assert "\b" not in out["summary"] and "\x01" not in out["summary"]
+    assert out["generated_by"] == "llm" and "₹999" in out["summary"] and "₹18,999" in out["summary"]

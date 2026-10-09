@@ -327,6 +327,10 @@ def _overlap(query: str, title: str) -> float:
     return len(qt & tt) / len(qt)
 
 
+_MULTIPACK_RE = re.compile(r"\b(combo|bundle|twin ?pack|pack of \d+|set of \d+|\d+\s?(?:pcs|pieces|units)|"
+                           r"(?:2|3|4)\s?x\s|buy \d+ get)\b", re.IGNORECASE)
+
+
 def anchor_from_search(d: dict, query: str) -> Anchor | None:
     scored: list[tuple[float, float, dict]] = []
     q_models = resolve._model_numbers(query)
@@ -343,6 +347,8 @@ def anchor_from_search(d: dict, query: str) -> Anchor | None:
             continue  # "80mm Headphone Cushion Compatible with Rockerz 450"
         if parse.variant_markers(resolve._head(title)) - q_marks:
             continue  # "Redmi Note 13" or "141 Pro" when the user asked for "Redmi 13" / "141"
+        if _MULTIPACK_RE.search(title) and not _MULTIPACK_RE.search(query):
+            continue  # "Combo Ninja Call Pro Plus … (Black) Ninja Call Pro Plus … (Grey)": two units, not the product
         score = _overlap(query, title) - (0.15 if o.get("sponsored") else 0) - i * 0.01
         scored.append((score, parse.parse_inr(o.get("price")), o))
     if not scored or max(s for s, _, _ in scored) < 0.5:
@@ -543,7 +549,7 @@ def choose_card(same: list[resolve.Candidate], brand: str | None) -> resolve.Can
         pref = {"official": 0, "major": 1, "quick": 2, "other": 3, "import": 4}.get(kind, 5)
         return (pref, -(c.extra.get("reviews") or 0), c.id)
 
-    return sorted(with_token, key=rank)[0]
+    return min(with_token, key=rank)
 
 
 async def llm_resolve(llm: LLM, anchor_title: str, cands: list[resolve.Candidate]) -> str:
@@ -610,7 +616,7 @@ async def expand_short_link(raw: str) -> str:
             r = await c.head("https://" + m.group(1).lower() + (m.group(2) or "/"))
             final = str(r.url)
         host = (httpx.URL(final).host or "").lower()
-        return final if host.endswith("amazon.in") or host.endswith("amazon.com") else raw
+        return final if host.endswith(("amazon.in", "amazon.com")) else raw
     except Exception:  # noqa: BLE001 - expansion is best-effort; classify() reports unreadable links
         return raw
 
@@ -666,6 +672,14 @@ _PCT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s?%")
 _MULT_RE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s?[x×]", re.IGNORECASE)
 
 
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _clean(text: object) -> str:
+    """Model text without control characters (Gemini once emitted a backspace before each ₹)."""
+    return _CONTROL_RE.sub("", str(text or "")).strip()
+
+
 def numbers_grounded(text: str, facts: dict) -> bool:
     """True when every ₹ amount, percentage and multiple in `text` also appears in the computed facts."""
     blob = " ".join(str(v) for v in facts.values() if v is not None)
@@ -712,11 +726,11 @@ async def narrate(llm: LLM, m: mk.Market, v: mk.Verdict, anchor: Anchor | None, 
     if isinstance(data, dict):
         valid = {s["id"] for s in sources}
         voices = [
-            {"point": str(vb.get("point", ""))[:240], "tone": vb.get("tone") if vb.get("tone") in {"positive", "negative", "mixed"} else "mixed",
+            {"point": _clean(vb.get("point", ""))[:240], "tone": vb.get("tone") if vb.get("tone") in {"positive", "negative", "mixed"} else "mixed",
              "source_ids": [i for i in _l(vb.get("source_ids")) if i in valid]}
             for vb in _l(data.get("voices")) if isinstance(vb, dict)
         ]
-        summary = re.sub(r'"(₹[0-9,]+)"', r"", str(data.get("summary") or ""))  # some models quote amounts
+        summary = re.sub(r'"(₹[0-9,]+)"', r"\1", _clean(data.get("summary") or ""))  # some models quote amounts
         # The summary may only restate computed numbers; anything else falls back to the template.
         if summary and numbers_grounded(summary, facts):
             return {"summary": summary, "voices": [x for x in voices if x["source_ids"]], "generated_by": "llm"}

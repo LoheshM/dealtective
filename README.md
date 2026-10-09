@@ -4,7 +4,9 @@
 
 > SerpApi India Hackathon 2026 · Track: **Commerce & Market Intelligence**
 
-![Dealtective result for boAt Airdopes 141 Gen 2](docs/screenshots/desktop-light.png)
+![Case file: a smartwatch claiming 95% off, stamped “M.R.P. 17.3× market”](docs/screenshots/case-fire-boltt.png)
+
+*The UI is a detective's case file: the listing goes in as Exhibit A, the stores are lined up, the market price is computed, and the verdict is rubber-stamped.*
 
 ## The problem
 
@@ -18,7 +20,11 @@ During Big Billion Days and the Great Indian Festival, almost every listing show
   - None of them says what the rest of the market charges for the same item today.
   - None of them checks the M.R.P.
 
-**A live example (8 Oct 2026, from the app):**
+**Live examples (8–9 Oct 2026, from the app):**
+- Amazon.in lists the *Fire-Boltt Ninja Call Pro Plus* smartwatch at **₹999, "−95%" off an M.R.P. of ₹18,999**, under a *Great Indian Festival* badge. Dealtective finds 6 in-stock Indian stores selling it at a median of **₹1,099**.
+  - **Real saving: ₹100**, against a claimed 95%.
+  - The M.R.P. is **17.3×** what stores charge.
+  - Flipkart lists the same watch with an M.R.P. of **₹9,999** (PriceBefore, 9 Oct), so the "original price" differs by store.
 - Amazon.in sells *boAt Airdopes 141 Gen 2* at **₹799**, showing "−80%" against an **M.R.P. of ₹3,990**, under a *Great Indian Festival* badge.
 - Dealtective found the same product at boAt.com, Zop and Myntra. The market price is **₹799**.
 - **Real saving: ₹0.** The M.R.P. is **5.0×** what any store charges.
@@ -82,7 +88,7 @@ uv run uvicorn app.main:app --port 8000
 
 **No keys? It still runs.**
 - With no `SERPAPI_API_KEY`, the app switches to **replay mode**.
-- The three example chips play back recorded SerpApi and OpenAI responses from `data/fixtures/`, one for each verdict type.
+- The five example chips play back recorded SerpApi and Gemini responses from `data/fixtures/`, covering every verdict type.
 - Recorded fixtures contain no API keys.
 
 CLI: `uv run python -m scripts.check "https://www.amazon.in/dp/B0F8BVSK21"` prints the whole event stream.
@@ -141,6 +147,7 @@ Final results:
 
 | Product | Dealtective says | Web evidence | |
 |---|---|---|---|
+| Fire-Boltt Ninja Call Pro Plus (typed) | Amazon ₹999 "−95%" vs M.R.P. ₹18,999 → **good deal, real saving ₹100**; market ₹1,099 (6 stores); M.R.P. **17.3×** market | Flipkart ₹999–1,299 by colour, M.R.P. ₹9,999 (PriceBefore, 9 Oct); DesiDime deal posts show Amazon ₹999–1,099 vs ₹18,999–19,999 | ✅ |
 | boAt Airdopes 141 Gen 2 (Amazon link) | ₹799, claims 80% off ₹3,990 → **fair price, real saving ₹0**, M.R.P. 5× market; same price at boAt.com | Flipkart ₹799 / M.R.P. ₹3,990 (price-history.in, 8 Oct); boAt store ₹799 | ✅ |
 | Sony WH-1000XM5 | Amazon ₹19,989 → **good deal**, 19% below market; same price at Flipkart | Amazon ₹19,989, Flipkart ₹19,990, Croma ₹22,990; ₹19,989 is the all-time low (pricehistoryapp, 8 Oct) | ✅ |
 | Redmi 13 5G 8/128 | Amazon listing ₹23,999 → **₹11,000 above market** (≈₹13k); Mi.com ₹12,499 cheaper | Market ₹12.5–14.5k (Bajaj Finserv, myG, Supreme Mobiles) | ✅ |

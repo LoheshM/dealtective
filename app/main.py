@@ -23,6 +23,8 @@ log = logging.getLogger("dealtective")
 WEB = ROOT / "web"
 
 EXAMPLES = [
+    {"label": "Fire-Boltt Ninja Call Pro Plus", "query": "Fire-Boltt Ninja Call Pro Plus",
+     "hint": "“95% off” · M.R.P. 17× the market"},
     {"label": "boAt Airdopes 141 Gen 2", "query": "https://www.amazon.in/dp/B0F8BVSK21",
      "hint": "Amazon link · 80% off claim"},
     {"label": "Sony WH-1000XM5", "query": "Sony WH-1000XM5", "hint": "Real festive deal"},
@@ -68,7 +70,11 @@ def create_app(settings: Settings | None = None, deps: pipeline.Deps | None = No
         # Credit-spending endpoints must not be triggerable by other websites (<img src=…>, fetch).
         if request.url.path.startswith("/api/") and request.headers.get("sec-fetch-site") == "cross-site":
             return JSONResponse({"error": "cross-site requests are not allowed"}, status_code=403)
-        return await call_next(request)
+        resp = await call_next(request)
+        # No framing: a hidden <iframe> on another site must not be able to run checks (and spend credits).
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors 'none'"
+        return resp
 
     def stream(runner) -> EventSourceResponse:
         queue: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()

@@ -140,6 +140,9 @@ function resetPanels() {
   $("#product-badges").innerHTML = "";
   $("#product-title").textContent = "Reading listing…";
   $("#product-sub").textContent = "";
+  $("#stamp").className = "stamp hidden";
+  $("#stamp").textContent = "";
+  $("#case-no").textContent = "Case #" + caseNo(state.query);
   $("#verdict-label").className = "verdict-label";
   $("#verdict-label").textContent = "Checking stores…";
   $("#headline").innerHTML = "";
@@ -207,8 +210,40 @@ function addNotice(text, isErr = false) {
 }
 
 /* ---------- anchor / product ---------- */
+function caseNo(q) {
+  // A stable, human-looking case number for the folder tab: the ASIN when there is one, else a short hash.
+  const asin = /\b(B0[A-Z0-9]{8})\b/i.exec(q || "");
+  if (asin) return asin[1].toUpperCase();
+  let h = 0;
+  for (const ch of String(q || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return "DT-" + (h % 90000 + 10000);
+}
+
+const STAMPS = {
+  good_deal: ["Genuine deal", "good"], fair_price: ["Fair price", "fair"], above_market: ["Above market", ""],
+  not_enough_data: ["Not enough evidence", "grey"], no_deal_price: ["Market checked", "grey"],
+  unusually_low: ["Verify seller", "fair"],
+};
+
+function renderStamp() {
+  const v = state.verdict;
+  const el = $("#stamp");
+  let text, cls, sub = "";
+  if (v.mrp_theatre && v.mrp_multiple) {
+    text = `M.R.P. ${v.mrp_multiple.toFixed(1)}× market`;
+    cls = "";
+    sub = LABELS[v.label] || "";
+  } else {
+    [text, cls] = STAMPS[v.label] || [LABELS[v.label] || v.label, "grey"];
+  }
+  el.className = "stamp " + cls;
+  el.innerHTML = `${esc(text)}${sub ? `<small>Verdict: ${esc(sub)}</small>` : ""}`;
+  void el.offsetWidth; // restart the thump animation for a new case
+}
+
 function onAnchor(a) {
   state.anchor = a;
+  if (a.asin) $("#case-no").textContent = "Case #" + String(a.asin).toUpperCase();
   setProduct(a.title, a.image);
   const badges = $("#product-badges");
   badges.innerHTML = "";
@@ -263,6 +298,7 @@ function onMarket(d) {
   if (!state.anchor) setProduct(d.product?.title || state.query, d.product?.image);
   else if (!safeUrl(state.anchor.image)) setProduct(null, d.product?.image);
   renderVerdict();
+  renderStamp();
   renderNumberLine();
   renderStores();
   $("#lens-btn").disabled = !safeUrl(state.anchor?.image || d.product?.image);
@@ -363,7 +399,7 @@ function renderNumberLine() {
     }
     if (m.reference && v.mrp_multiple && v.mrp > m.reference * 1.2) {
       const rx = x(m.reference) + 8, y = 96;
-      parts.push(`<line class="gap" x1="${rx}" x2="${mx - 6}" y1="${y}" y2="${y}" marker-end="url(#arr)"/>`);
+      parts.push(`<line class="gap" pathLength="1" x1="${rx}" x2="${mx - 6}" y1="${y}" y2="${y}" marker-end="url(#arr)"/>`);
       parts.push(`<text class="gap-lbl" x="${(rx + mx) / 2}" y="${y - 7}" text-anchor="middle">${W < 520 ? "" : "M.R.P. is "}${v.mrp_multiple.toFixed(1)}× the market price</text>`);
     }
   }
